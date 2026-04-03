@@ -10,7 +10,7 @@ def train_road_model():
 
     DATA_PATH = 'cctv-roadseg-dataset/data.yaml'
 
-    model = YOLO('yolo26s-seg.pt')
+    model = YOLO('yolo26l-seg.pt')
 
     model.train(data=DATA_PATH, epochs=50, imgsz=640, batch=-1, device=0)
 

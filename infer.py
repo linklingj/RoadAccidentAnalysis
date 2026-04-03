@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import math
 import sys
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -24,11 +25,15 @@ class PipelineConfig:
     perspective_version: str = DEFAULT_PERSPECTIVE_VERSION
     road_conf: float = 0.25
     object_conf: float = 0.15
-    camera_height_m: float = 3.5
+    camera_height_m: float = 6.5
     pixels_per_meter: float = 42.0
     bev_width: int = 960
     bev_height: int = 960
     max_polygon_points: int = 600
+    track_max_distance_m: float = 3.0
+    track_max_missed_frames: int = 10
+    trajectory_max_length: int = 60
+    video_recompute_camera_each_frame: bool = False
     device: Optional[Any] = None
 
 
@@ -122,6 +127,7 @@ def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
 
         detections.append(
             {
+                "detection_id": i,
                 "class_id": cls_id,
                 "class_name": class_name,
                 "confidence": conf,
@@ -335,11 +341,112 @@ def _project_objects_to_bev(
     return projected
 
 
+def _track_color(track_id: int) -> Tuple[int, int, int]:
+    # Deterministic BGR color from track id.
+    r = (37 * track_id + 53) % 255
+    g = (17 * track_id + 101) % 255
+    b = (67 * track_id + 191) % 255
+    return int(b), int(g), int(r)
+
+
+class BEVObjectTracker:
+    def __init__(self, cfg: PipelineConfig):
+        self.max_distance_m = cfg.track_max_distance_m
+        self.max_missed_frames = cfg.track_max_missed_frames
+        self.max_history = cfg.trajectory_max_length
+        self.next_track_id = 1
+        self.tracks: Dict[int, Dict[str, Any]] = {}
+
+    def _new_track(self, obj: Dict[str, Any]) -> int:
+        track_id = self.next_track_id
+        self.next_track_id += 1
+        history: Deque[Tuple[int, int]] = deque(maxlen=self.max_history)
+        history.append(tuple(obj["bev_xy"]))
+        self.tracks[track_id] = {
+            "track_id": track_id,
+            "class_name": obj["class_name"],
+            "world_position_m": np.asarray(obj["world_position_m"], dtype=np.float32),
+            "bev_xy": tuple(obj["bev_xy"]),
+            "missed": 0,
+            "history": history,
+        }
+        return track_id
+
+    def update(self, objects_bev: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[int, List[Tuple[int, int]]]]:
+        active_track_ids = list(self.tracks.keys())
+        matched_track_ids: set[int] = set()
+        matched_det_ids: set[int] = set()
+
+        # Greedy global matching by nearest world-space distance with class consistency.
+        candidates: List[Tuple[float, int, int]] = []
+        for det_idx, obj in enumerate(objects_bev):
+            obj_pos = np.asarray(obj["world_position_m"], dtype=np.float32)
+            obj_cls = obj["class_name"]
+            for track_id in active_track_ids:
+                track = self.tracks[track_id]
+                if track["class_name"] != obj_cls:
+                    continue
+                dist = float(np.linalg.norm(obj_pos - track["world_position_m"]))
+                if dist <= self.max_distance_m:
+                    candidates.append((dist, det_idx, track_id))
+        candidates.sort(key=lambda x: x[0])
+
+        det_to_track: Dict[int, int] = {}
+        for _, det_idx, track_id in candidates:
+            if det_idx in matched_det_ids or track_id in matched_track_ids:
+                continue
+            matched_det_ids.add(det_idx)
+            matched_track_ids.add(track_id)
+            det_to_track[det_idx] = track_id
+
+        # Create tracks for unmatched detections.
+        for det_idx, obj in enumerate(objects_bev):
+            if det_idx in det_to_track:
+                continue
+            det_to_track[det_idx] = self._new_track(obj)
+            matched_track_ids.add(det_to_track[det_idx])
+
+        # Update matched tracks and decay unmatched tracks.
+        for det_idx, obj in enumerate(objects_bev):
+            track_id = det_to_track[det_idx]
+            track = self.tracks[track_id]
+            track["world_position_m"] = np.asarray(obj["world_position_m"], dtype=np.float32)
+            track["bev_xy"] = tuple(obj["bev_xy"])
+            track["missed"] = 0
+            track["history"].append(tuple(obj["bev_xy"]))
+
+        to_delete: List[int] = []
+        for track_id, track in self.tracks.items():
+            if track_id in matched_track_ids:
+                continue
+            track["missed"] += 1
+            if track["missed"] > self.max_missed_frames:
+                to_delete.append(track_id)
+        for track_id in to_delete:
+            del self.tracks[track_id]
+
+        tracked_objects: List[Dict[str, Any]] = []
+        for det_idx, obj in enumerate(objects_bev):
+            track_id = det_to_track[det_idx]
+            item = dict(obj)
+            item["track_id"] = track_id
+            tracked_objects.append(item)
+
+        trajectories = {
+            track_id: list(track["history"])
+            for track_id, track in self.tracks.items()
+            if len(track["history"]) >= 2
+        }
+        return tracked_objects, trajectories
+
+
 def render_bev_scene(
     road_polygons_uv: List[np.ndarray],
     detections: List[Dict[str, Any]],
     camera: Dict[str, float],
     cfg: PipelineConfig,
+    projected_objects: Optional[List[Dict[str, Any]]] = None,
+    trajectories: Optional[Dict[int, List[Tuple[int, int]]]] = None,
 ) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
     canvas = np.full((cfg.bev_height, cfg.bev_width, 3), 24, dtype=np.uint8)
     _draw_bev_grid(canvas, cfg.pixels_per_meter)
@@ -349,12 +456,34 @@ def render_bev_scene(
         cv2.fillPoly(canvas, [poly], color=(44, 92, 44))
         cv2.polylines(canvas, [poly], isClosed=True, color=(86, 160, 86), thickness=1, lineType=cv2.LINE_AA)
 
-    projected_objects = _project_objects_to_bev(detections, camera, cfg)
+    if projected_objects is None:
+        projected_objects = _project_objects_to_bev(detections, camera, cfg)
+
+    if trajectories:
+        for track_id, points in trajectories.items():
+            if len(points) < 2:
+                continue
+            line = np.asarray(points, dtype=np.int32)
+            cv2.polylines(
+                canvas,
+                [line],
+                isClosed=False,
+                color=_track_color(track_id),
+                thickness=2,
+                lineType=cv2.LINE_AA,
+            )
+
     for obj in projected_objects:
         x_px, y_px = obj["bev_xy"]
         if 0 <= x_px < cfg.bev_width and 0 <= y_px < cfg.bev_height:
-            cv2.circle(canvas, (x_px, y_px), 5, (60, 160, 255), -1)
-            label = f"{obj['class_name']}:{obj['confidence']:.2f}"
+            track_id = obj.get("track_id")
+            if track_id is None:
+                color = (60, 160, 255)
+                label = f"{obj['class_name']}:{obj['confidence']:.2f}"
+            else:
+                color = _track_color(int(track_id))
+                label = f"T{int(track_id)} {obj['class_name']}:{obj['confidence']:.2f}"
+            cv2.circle(canvas, (x_px, y_px), 5, color, -1)
             cv2.putText(
                 canvas,
                 label,
@@ -383,6 +512,7 @@ def render_image_overlay(
     image_bgr: np.ndarray,
     road_polygons_uv: List[np.ndarray],
     detections: List[Dict[str, Any]],
+    track_id_map: Optional[Dict[int, int]] = None,
 ) -> np.ndarray:
     overlay = image_bgr.copy()
 
@@ -396,16 +526,24 @@ def render_image_overlay(
     for det in detections:
         x1, y1, x2, y2 = det["bbox_xyxy"]
         foot_u, foot_v = det["footpoint_uv"]
-        cv2.rectangle(overlay, (int(x1), int(y1)), (int(x2), int(y2)), (0, 220, 255), 2)
+        det_id = int(det.get("detection_id", -1))
+        track_id = track_id_map.get(det_id) if track_id_map else None
+        if track_id is None:
+            color = (0, 220, 255)
+            label = f"{det['class_name']}:{det['confidence']:.2f}"
+        else:
+            color = _track_color(int(track_id))
+            label = f"T{int(track_id)} {det['class_name']}:{det['confidence']:.2f}"
+
+        cv2.rectangle(overlay, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
         cv2.circle(overlay, (int(foot_u), int(foot_v)), 4, (20, 20, 255), -1)
-        label = f"{det['class_name']}:{det['confidence']:.2f}"
         cv2.putText(
             overlay,
             label,
             (int(x1), max(20, int(y1) - 6)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
-            (0, 220, 255),
+            color,
             2,
             cv2.LINE_AA,
         )
@@ -477,6 +615,151 @@ class RoadSceneProjector:
 
         return outputs
 
+    def _process_video_frame(
+        self,
+        frame_bgr: np.ndarray,
+        road_polygons_uv: List[np.ndarray],
+        camera: Dict[str, float],
+        tracker: BEVObjectTracker,
+    ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]], List[Dict[str, Any]], Dict[int, List[Tuple[int, int]]]]:
+        obj_out = infer_object_model(
+            image_bgr=frame_bgr,
+            model=self.object_model,
+            conf=self.config.object_conf,
+            device=self.device,
+        )
+        projected = _project_objects_to_bev(obj_out["detections"], camera, self.config)
+        tracked_objects, trajectories = tracker.update(projected)
+        track_id_map = {
+            int(item["detection_id"]): int(item["track_id"])
+            for item in tracked_objects
+            if "detection_id" in item and "track_id" in item
+        }
+
+        bev_image, _ = render_bev_scene(
+            road_polygons_uv=road_polygons_uv,
+            detections=obj_out["detections"],
+            camera=camera,
+            cfg=self.config,
+            projected_objects=tracked_objects,
+            trajectories=trajectories,
+        )
+        overlay_image = render_image_overlay(
+            image_bgr=frame_bgr,
+            road_polygons_uv=road_polygons_uv,
+            detections=obj_out["detections"],
+            track_id_map=track_id_map,
+        )
+        return overlay_image, bev_image, tracked_objects, obj_out["detections"], trajectories
+
+    def run_video(self, video_path: str, save_dir: Optional[str] = None) -> Dict[str, Any]:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise FileNotFoundError(f"Failed to open video: {video_path}")
+
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
+        if fps <= 1e-3:
+            fps = 30.0
+        frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        ok, first_frame = cap.read()
+        if not ok or first_frame is None:
+            cap.release()
+            raise RuntimeError(f"Video has no readable frame: {video_path}")
+
+        # Road model is intentionally run once for static-camera video.
+        road_out = infer_road_model(
+            image_bgr=first_frame,
+            model=self.road_model,
+            conf=self.config.road_conf,
+            device=self.device,
+        )
+        road_polygons_uv = road_out["road_polygons_uv"]
+
+        camera = estimate_camera_params(first_frame, self.perspective_model)
+        tracker = BEVObjectTracker(self.config)
+
+        save_root = Path(save_dir or "output")
+        save_root.mkdir(parents=True, exist_ok=True)
+        stem = Path(video_path).stem
+        output_video_path = save_root / f"{stem}_tracked_bev.mp4"
+
+        out_w = frame_w * 2
+        out_h = frame_h
+        writer = cv2.VideoWriter(
+            str(output_video_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (out_w, out_h),
+        )
+        if not writer.isOpened():
+            cap.release()
+            raise RuntimeError(f"Failed to create output video writer: {output_video_path}")
+
+        frame_idx = 0
+        total_detections_2d = 0
+        total_tracked = 0
+        last_overlay = None
+        last_bev = None
+        last_trajectories: Dict[int, List[Tuple[int, int]]] = {}
+
+        while True:
+            if frame_idx == 0:
+                frame = first_frame
+            else:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+
+            if self.config.video_recompute_camera_each_frame and frame_idx > 0:
+                camera = estimate_camera_params(frame, self.perspective_model)
+
+            overlay, bev, tracked_objects, detections_2d, trajectories = self._process_video_frame(
+                frame_bgr=frame,
+                road_polygons_uv=road_polygons_uv,
+                camera=camera,
+                tracker=tracker,
+            )
+
+            bev_resized = cv2.resize(bev, (frame_w, frame_h), interpolation=cv2.INTER_LINEAR)
+            vis = np.hstack([overlay, bev_resized])
+            cv2.putText(
+                vis,
+                f"frame={frame_idx}",
+                (12, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (220, 220, 220),
+                2,
+                cv2.LINE_AA,
+            )
+
+            writer.write(vis)
+            total_detections_2d += len(detections_2d)
+            total_tracked += len(tracked_objects)
+            frame_idx += 1
+            last_overlay = overlay
+            last_bev = bev
+            last_trajectories = trajectories
+
+        cap.release()
+        writer.release()
+
+        outputs: Dict[str, Any] = {
+            "video_path": video_path,
+            "saved_video_path": str(output_video_path),
+            "frames_processed": frame_idx,
+            "camera": camera,
+            "road_polygons_uv": road_polygons_uv,
+            "avg_detections_2d_per_frame": (total_detections_2d / frame_idx) if frame_idx else 0.0,
+            "avg_tracked_per_frame": (total_tracked / frame_idx) if frame_idx else 0.0,
+            "last_overlay_image": last_overlay,
+            "last_bev_image": last_bev,
+            "last_trajectories": last_trajectories,
+        }
+        return outputs
+
 
 def run_pipeline(
     image_path: str,
@@ -485,3 +768,12 @@ def run_pipeline(
 ) -> Dict[str, Any]:
     projector = RoadSceneProjector(config=config)
     return projector.run(image_path=image_path, save_dir=save_dir)
+
+
+def run_video_pipeline(
+    video_path: str,
+    save_dir: str = "output",
+    config: Optional[PipelineConfig] = None,
+) -> Dict[str, Any]:
+    projector = RoadSceneProjector(config=config)
+    return projector.run_video(video_path=video_path, save_dir=save_dir)
