@@ -7,6 +7,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video", type=str, default=None, help="Input video path (if set, video mode runs)")
     parser.add_argument("--output-dir", type=str, default="output", help="Directory to save overlay and BEV images")
     parser.add_argument("--road-model", type=str, default="runs/segment/0405-road/weights/best.pt", help="Road YOLO model path")
+    parser.add_argument("--crosswalk-model", type=str, default="runs/segment/0407-crosswalk/weights/best.pt", help="Crosswalk YOLO model path")
     parser.add_argument("--object-model", type=str, default="runs/segment/0401-object/weights/best.pt", help="Object YOLO model path")
     parser.add_argument("--perspective-version", type=str, default="Paramnet-360Cities-edina-centered", help="PerspectiveFields model version")
     parser.add_argument("--road-conf", type=float, default=0.25, help="Road model confidence threshold")
@@ -37,6 +38,7 @@ def main() -> None:
 
     config = PipelineConfig(
         road_model_path=args.road_model,
+        crosswalk_model_path=args.crosswalk_model,
         object_model_path=args.object_model,
         perspective_version=args.perspective_version,
         road_conf=args.road_conf,

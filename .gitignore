@@ -80,3 +80,4 @@ test_images/
 cctv-object-dataset/
 cctv-road-dataset/
 cctv-roadseg-dataset/
+cctv-crosswalk-dataset/

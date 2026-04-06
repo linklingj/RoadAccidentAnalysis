@@ -14,6 +14,14 @@ def train_road_model():
 
     model.train(data=DATA_PATH, epochs=50, imgsz=640, batch=-1, device=0)
 
+def train_crosswalk_model():
+
+    DATA_PATH = 'cctv-crosswalk-dataset/data.yaml'
+
+    model = YOLO('yolo26l-seg.pt')
+
+    model.train(data=DATA_PATH, epochs=50, imgsz=640, batch=-1, device=0, patience=20)
+
 def train_object_model():
 
     DATA_PATH = 'cctv-object-dataset/data.yaml'
@@ -26,6 +34,8 @@ def train_object_model():
 if __name__ == "__main__":
     if args.model == "road":
         train_road_model()
+    elif args.model == "crosswalk":
+        train_crosswalk_model()
     elif args.model == "object":
         train_object_model()
     

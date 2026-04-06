@@ -14,6 +14,7 @@ from ultralytics import YOLO
 
 
 DEFAULT_ROAD_MODEL_PATH = "runs/segment/0401-road/weights/best.pt"
+DEFAULT_CROSSWALK_MODEL_PATH = "runs/segment/0406-crosswalk/weights/best.pt"
 DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0401-object/weights/best.pt"
 DEFAULT_PERSPECTIVE_VERSION = "Paramnet-360Cities-edina-centered"
 
@@ -21,10 +22,12 @@ DEFAULT_PERSPECTIVE_VERSION = "Paramnet-360Cities-edina-centered"
 @dataclass
 class PipelineConfig:
     road_model_path: str = DEFAULT_ROAD_MODEL_PATH
+    crosswalk_model_path: str = DEFAULT_CROSSWALK_MODEL_PATH
     object_model_path: str = DEFAULT_OBJECT_MODEL_PATH
     perspective_version: str = DEFAULT_PERSPECTIVE_VERSION
     road_conf: float = 0.25
     object_conf: float = 0.15
+    crosswalk_conf: float = 0.15
     camera_height_m: float = 6.5
     pixels_per_meter: float = 42.0
     bev_width: int = 960
@@ -98,6 +101,15 @@ def _extract_road_polygons(result: Any) -> List[np.ndarray]:
         polygons.append(np.asarray(poly, dtype=np.float32))
     return polygons
 
+def _extract_crosswalk_polygons(result: Any) -> List[np.ndarray]:
+    polygons: List[np.ndarray] = []
+    if result is None or result.masks is None or result.masks.xy is None:
+        return polygons
+    for poly in result.masks.xy:
+        if poly is None or len(poly) < 3:
+            continue
+        polygons.append(np.asarray(poly, dtype=np.float32))
+    return polygons
 
 def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
     detections: List[Dict[str, Any]] = []
@@ -112,8 +124,8 @@ def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
         conf = float(box.conf.item())
         cls_id = int(box.cls.item())
         class_name = names[cls_id] if isinstance(names, dict) and cls_id in names else str(cls_id)
-        # skip 'attention'
-        if class_name == "attention":
+        # skip 'attention' & 'crosswalk'
+        if class_name == "attention" or class_name == "crosswalk":
             continue
 
         foot_x = (x1 + x2) * 0.5
@@ -157,6 +169,25 @@ def infer_road_model(
         "road_polygons_uv": _extract_road_polygons(result),
     }
 
+def infer_crosswalk_model(
+    image_bgr: np.ndarray,
+    model: YOLO,
+    conf: float,
+    device: Any,
+) -> Dict[str, Any]:
+    results = model.predict(
+        source=image_bgr,
+        save=False,
+        conf=conf,
+        device=device,
+        verbose=False,
+        classes=[1]
+    )
+    result = results[0] if results else None
+    return {
+        "raw_result": result,
+        "crosswalk_polygons_uv": _extract_crosswalk_polygons(result),
+    }
 
 def infer_object_model(
     image_bgr: np.ndarray,
@@ -294,13 +325,13 @@ def _draw_bev_grid(canvas: np.ndarray, pixels_per_meter: float) -> None:
     cv2.putText(canvas, "camera", (w // 2 + 10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (170, 220, 255), 1, cv2.LINE_AA)
 
 
-def _project_road_to_bev(
-    road_polygons_uv: List[np.ndarray],
+def _project_poly_to_bev(
+    polygons_uv: List[np.ndarray],
     camera: Dict[str, float],
     cfg: PipelineConfig,
 ) -> List[np.ndarray]:
     projected: List[np.ndarray] = []
-    for poly in road_polygons_uv:
+    for poly in polygons_uv:
         if len(poly) > cfg.max_polygon_points:
             step = max(1, len(poly) // cfg.max_polygon_points)
             poly = poly[::step]
@@ -442,6 +473,7 @@ class BEVObjectTracker:
 
 def render_bev_scene(
     road_polygons_uv: List[np.ndarray],
+    crosswalk_polygons_uv: List[np.ndarray],
     detections: List[Dict[str, Any]],
     camera: Dict[str, float],
     cfg: PipelineConfig,
@@ -451,10 +483,15 @@ def render_bev_scene(
     canvas = np.full((cfg.bev_height, cfg.bev_width, 3), 24, dtype=np.uint8)
     _draw_bev_grid(canvas, cfg.pixels_per_meter)
 
-    road_bev_polygons = _project_road_to_bev(road_polygons_uv, camera, cfg)
+    road_bev_polygons = _project_poly_to_bev(road_polygons_uv, camera, cfg)
     for poly in road_bev_polygons:
         cv2.fillPoly(canvas, [poly], color=(44, 92, 44))
         cv2.polylines(canvas, [poly], isClosed=True, color=(86, 160, 86), thickness=1, lineType=cv2.LINE_AA)
+
+    crosswalk_bev_polygons = _project_poly_to_bev(crosswalk_polygons_uv, camera, cfg)
+    for poly in crosswalk_bev_polygons:
+        cv2.fillPoly(canvas, [poly], color=(0, 220, 220))
+        #cv2.polylines(canvas, [poly], isClosed=True, color=(255, 255, 0), thickness=1, lineType=cv2.LINE_AA)
 
     if projected_objects is None:
         projected_objects = _project_objects_to_bev(detections, camera, cfg)
@@ -511,6 +548,7 @@ def render_bev_scene(
 def render_image_overlay(
     image_bgr: np.ndarray,
     road_polygons_uv: List[np.ndarray],
+    crosswalk_polygons_uv: List[np.ndarray],
     detections: List[Dict[str, Any]],
     track_id_map: Optional[Dict[int, int]] = None,
 ) -> np.ndarray:
@@ -521,6 +559,13 @@ def render_image_overlay(
         int_polys = [np.asarray(poly, dtype=np.int32) for poly in road_polygons_uv if len(poly) >= 3]
         if int_polys:
             cv2.fillPoly(mask_layer, int_polys, color=(0, 140, 0))
+            overlay = cv2.addWeighted(mask_layer, 0.3, overlay, 0.7, 0.0)
+
+    if crosswalk_polygons_uv:
+        mask_layer = overlay.copy()
+        int_polys = [np.asarray(poly, dtype=np.int32) for poly in crosswalk_polygons_uv if len(poly) >= 3]
+        if int_polys:
+            cv2.fillPoly(mask_layer, int_polys, color=(0, 220, 220))
             overlay = cv2.addWeighted(mask_layer, 0.3, overlay, 0.7, 0.0)
 
     for det in detections:
@@ -554,8 +599,8 @@ class RoadSceneProjector:
     def __init__(self, config: Optional[PipelineConfig] = None):
         self.config = config or PipelineConfig()
         self.device = _resolve_device(self.config.device)
-
         self.road_model = YOLO(self.config.road_model_path)
+        self.crosswalk_model = YOLO(self.config.crosswalk_model_path)
         self.object_model = YOLO(self.config.object_model_path)
         self.perspective_model = _load_perspective_model(self.config.perspective_version, self.device)
 
@@ -570,6 +615,12 @@ class RoadSceneProjector:
             conf=self.config.road_conf,
             device=self.device,
         )
+        crosswalk_out = infer_crosswalk_model(
+            image_bgr=image_bgr,
+            model=self.crosswalk_model,
+            conf=self.config.crosswalk_conf,
+            device=self.device,
+        )
         obj_out = infer_object_model(
             image_bgr=image_bgr,
             model=self.object_model,
@@ -580,6 +631,7 @@ class RoadSceneProjector:
         camera = estimate_camera_params(image_bgr, self.perspective_model)
         bev_image, projected_objects = render_bev_scene(
             road_polygons_uv=road_out["road_polygons_uv"],
+            crosswalk_polygons_uv=crosswalk_out["crosswalk_polygons_uv"],
             detections=obj_out["detections"],
             camera=camera,
             cfg=self.config,
@@ -587,6 +639,7 @@ class RoadSceneProjector:
         overlay_image = render_image_overlay(
             image_bgr=image_bgr,
             road_polygons_uv=road_out["road_polygons_uv"],
+            crosswalk_polygons_uv=crosswalk_out["crosswalk_polygons_uv"],
             detections=obj_out["detections"],
         )
 
@@ -619,6 +672,7 @@ class RoadSceneProjector:
         self,
         frame_bgr: np.ndarray,
         road_polygons_uv: List[np.ndarray],
+        crosswalk_polygons_uv: List[np.ndarray],
         camera: Dict[str, float],
         tracker: BEVObjectTracker,
     ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]], List[Dict[str, Any]], Dict[int, List[Tuple[int, int]]]]:
@@ -638,6 +692,7 @@ class RoadSceneProjector:
 
         bev_image, _ = render_bev_scene(
             road_polygons_uv=road_polygons_uv,
+            crosswalk_polygons_uv=crosswalk_polygons_uv,
             detections=obj_out["detections"],
             camera=camera,
             cfg=self.config,
@@ -647,6 +702,7 @@ class RoadSceneProjector:
         overlay_image = render_image_overlay(
             image_bgr=frame_bgr,
             road_polygons_uv=road_polygons_uv,
+            crosswalk_polygons_uv=crosswalk_polygons_uv,
             detections=obj_out["detections"],
             track_id_map=track_id_map,
         )
@@ -676,6 +732,13 @@ class RoadSceneProjector:
             device=self.device,
         )
         road_polygons_uv = road_out["road_polygons_uv"]
+        crosswalk_out = infer_crosswalk_model(
+            image_bgr=first_frame,
+            model=self.crosswalk_model,
+            conf=self.config.crosswalk_conf,
+            device=self.device,
+        )
+        crosswalk_polygons_uv = crosswalk_out["crosswalk_polygons_uv"]
 
         camera = estimate_camera_params(first_frame, self.perspective_model)
         tracker = BEVObjectTracker(self.config)
@@ -718,6 +781,7 @@ class RoadSceneProjector:
             overlay, bev, tracked_objects, detections_2d, trajectories = self._process_video_frame(
                 frame_bgr=frame,
                 road_polygons_uv=road_polygons_uv,
+                crosswalk_polygons_uv=crosswalk_polygons_uv,
                 camera=camera,
                 tracker=tracker,
             )
@@ -752,6 +816,8 @@ class RoadSceneProjector:
             "frames_processed": frame_idx,
             "camera": camera,
             "road_polygons_uv": road_polygons_uv,
+            "crosswalk_polygons_uv": crosswalk_polygons_uv,
+            "total_detections_2d": total_detections_2d,
             "avg_detections_2d_per_frame": (total_detections_2d / frame_idx) if frame_idx else 0.0,
             "avg_tracked_per_frame": (total_tracked / frame_idx) if frame_idx else 0.0,
             "last_overlay_image": last_overlay,
