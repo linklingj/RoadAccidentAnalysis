@@ -118,6 +118,7 @@ def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
 
     names = result.names if hasattr(result, "names") else {}
     masks_xy = result.masks.xy if result.masks is not None else None
+    track_ids = result.boxes.id  # None when using predict(), Tensor when using track()
 
     for i, box in enumerate(result.boxes):
         x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -137,6 +138,8 @@ def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
                 foot_x = float(contour[lowest_idx, 0])
                 foot_y = float(contour[lowest_idx, 1])
 
+        track_id = int(track_ids[i].item()) if track_ids is not None else None
+
         detections.append(
             {
                 "detection_id": i,
@@ -145,6 +148,7 @@ def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
                 "confidence": conf,
                 "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
                 "footpoint_uv": [float(foot_x), float(foot_y)],
+                "track_id": track_id,
             }
         )
     return detections
@@ -194,14 +198,13 @@ def infer_object_model(
     model: YOLO,
     conf: float,
     device: Any,
+    use_tracker: bool = False,
 ) -> Dict[str, Any]:
-    results = model.predict(
-        source=image_bgr,
-        save=False,
-        conf=conf,
-        device=device,
-        verbose=False,
-    )
+    common_kwargs = dict(source=image_bgr, save=False, conf=conf, device=device, verbose=False)
+    if use_tracker:
+        results = model.track(**common_kwargs, tracker="bytetrack.yaml", persist=True)
+    else:
+        results = model.predict(**common_kwargs)
     result = results[0] if results else None
     return {
         "raw_result": result,
@@ -381,16 +384,14 @@ def _track_color(track_id: int) -> Tuple[int, int, int]:
 
 
 class BEVObjectTracker:
+    """Accumulates BEV trajectories using track_ids supplied by ByteTrack (via YOLO.track)."""
+
     def __init__(self, cfg: PipelineConfig):
-        self.max_distance_m = cfg.track_max_distance_m
         self.max_missed_frames = cfg.track_max_missed_frames
         self.max_history = cfg.trajectory_max_length
-        self.next_track_id = 1
         self.tracks: Dict[int, Dict[str, Any]] = {}
 
-    def _new_track(self, obj: Dict[str, Any]) -> int:
-        track_id = self.next_track_id
-        self.next_track_id += 1
+    def _new_track(self, track_id: int, obj: Dict[str, Any]) -> None:
         history: Deque[Tuple[int, int]] = deque(maxlen=self.max_history)
         history.append(tuple(obj["bev_xy"]))
         self.tracks[track_id] = {
@@ -401,67 +402,40 @@ class BEVObjectTracker:
             "missed": 0,
             "history": history,
         }
-        return track_id
 
     def update(self, objects_bev: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[int, List[Tuple[int, int]]]]:
-        active_track_ids = list(self.tracks.keys())
-        matched_track_ids: set[int] = set()
-        matched_det_ids: set[int] = set()
+        seen_track_ids: set[int] = set()
 
-        # Greedy global matching by nearest world-space distance with class consistency.
-        candidates: List[Tuple[float, int, int]] = []
-        for det_idx, obj in enumerate(objects_bev):
-            obj_pos = np.asarray(obj["world_position_m"], dtype=np.float32)
-            obj_cls = obj["class_name"]
-            for track_id in active_track_ids:
+        tracked_objects: List[Dict[str, Any]] = []
+        for obj in objects_bev:
+            track_id = obj.get("track_id")
+            if track_id is None:
+                tracked_objects.append(obj)
+                continue
+
+            seen_track_ids.add(track_id)
+            if track_id not in self.tracks:
+                self._new_track(track_id, obj)
+            else:
                 track = self.tracks[track_id]
-                if track["class_name"] != obj_cls:
-                    continue
-                dist = float(np.linalg.norm(obj_pos - track["world_position_m"]))
-                if dist <= self.max_distance_m:
-                    candidates.append((dist, det_idx, track_id))
-        candidates.sort(key=lambda x: x[0])
+                track["world_position_m"] = np.asarray(obj["world_position_m"], dtype=np.float32)
+                track["bev_xy"] = tuple(obj["bev_xy"])
+                track["missed"] = 0
+                track["history"].append(tuple(obj["bev_xy"]))
 
-        det_to_track: Dict[int, int] = {}
-        for _, det_idx, track_id in candidates:
-            if det_idx in matched_det_ids or track_id in matched_track_ids:
-                continue
-            matched_det_ids.add(det_idx)
-            matched_track_ids.add(track_id)
-            det_to_track[det_idx] = track_id
-
-        # Create tracks for unmatched detections.
-        for det_idx, obj in enumerate(objects_bev):
-            if det_idx in det_to_track:
-                continue
-            det_to_track[det_idx] = self._new_track(obj)
-            matched_track_ids.add(det_to_track[det_idx])
-
-        # Update matched tracks and decay unmatched tracks.
-        for det_idx, obj in enumerate(objects_bev):
-            track_id = det_to_track[det_idx]
-            track = self.tracks[track_id]
-            track["world_position_m"] = np.asarray(obj["world_position_m"], dtype=np.float32)
-            track["bev_xy"] = tuple(obj["bev_xy"])
-            track["missed"] = 0
-            track["history"].append(tuple(obj["bev_xy"]))
+            item = dict(obj)
+            item["track_id"] = track_id
+            tracked_objects.append(item)
 
         to_delete: List[int] = []
         for track_id, track in self.tracks.items():
-            if track_id in matched_track_ids:
+            if track_id in seen_track_ids:
                 continue
             track["missed"] += 1
             if track["missed"] > self.max_missed_frames:
                 to_delete.append(track_id)
         for track_id in to_delete:
             del self.tracks[track_id]
-
-        tracked_objects: List[Dict[str, Any]] = []
-        for det_idx, obj in enumerate(objects_bev):
-            track_id = det_to_track[det_idx]
-            item = dict(obj)
-            item["track_id"] = track_id
-            tracked_objects.append(item)
 
         trajectories = {
             track_id: list(track["history"])
@@ -681,13 +655,14 @@ class RoadSceneProjector:
             model=self.object_model,
             conf=self.config.object_conf,
             device=self.device,
+            use_tracker=True,
         )
         projected = _project_objects_to_bev(obj_out["detections"], camera, self.config)
         tracked_objects, trajectories = tracker.update(projected)
         track_id_map = {
             int(item["detection_id"]): int(item["track_id"])
             for item in tracked_objects
-            if "detection_id" in item and "track_id" in item
+            if "detection_id" in item and item.get("track_id") is not None
         }
 
         bev_image, _ = render_bev_scene(

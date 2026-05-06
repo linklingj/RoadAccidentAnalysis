@@ -121,3 +121,5 @@ CCTV 영상 입력
 - **배포**: Docker + AWS EC2 구성
 - **속도 추정**: 프레임 간 BEV 좌표 변위로 객체 속도 계산
 - **차량 세분류**: 차종·색상 구분 (현재는 단일 class로 탐지)
+
+깃 commit co-author / author에 claude를 남기지 말 것
