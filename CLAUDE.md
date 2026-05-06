@@ -122,4 +122,7 @@ CCTV 영상 입력
 - **속도 추정**: 프레임 간 BEV 좌표 변위로 객체 속도 계산
 - **차량 세분류**: 차종·색상 구분 (현재는 단일 class로 탐지)
 
+## 추가 지시 사항
+
 깃 commit co-author / author에 claude를 남기지 말 것
+유니티에서 작업할때는 unity mcp와 skill을 사용할 것

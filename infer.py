@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import sys
 from collections import deque
@@ -741,6 +742,7 @@ class RoadSceneProjector:
         last_overlay = None
         last_bev = None
         last_trajectories: Dict[int, List[Tuple[int, int]]] = {}
+        frame_records: List[Dict[str, Any]] = []
 
         while True:
             if frame_idx == 0:
@@ -777,6 +779,36 @@ class RoadSceneProjector:
             writer.write(vis)
             total_detections_2d += len(detections_2d)
             total_tracked += len(tracked_objects)
+
+            frame_records.append({
+                "frame_index": frame_idx,
+                "tracked_objects": [
+                    {
+                        "track_id": obj.get("track_id") if obj.get("track_id") is not None else -1,
+                        "class_name": obj.get("class_name", ""),
+                        "confidence": float(obj.get("confidence", 0.0)),
+                        "bbox_x1": float(obj["bbox_xyxy"][0]) if obj.get("bbox_xyxy") else 0.0,
+                        "bbox_y1": float(obj["bbox_xyxy"][1]) if obj.get("bbox_xyxy") else 0.0,
+                        "bbox_x2": float(obj["bbox_xyxy"][2]) if obj.get("bbox_xyxy") else 0.0,
+                        "bbox_y2": float(obj["bbox_xyxy"][3]) if obj.get("bbox_xyxy") else 0.0,
+                        "foot_u": float(obj["footpoint_uv"][0]) if obj.get("footpoint_uv") else 0.0,
+                        "foot_v": float(obj["footpoint_uv"][1]) if obj.get("footpoint_uv") else 0.0,
+                        "world_x": float(obj["world_position_m"][0]) if obj.get("world_position_m") else 0.0,
+                        "world_z": float(obj["world_position_m"][1]) if obj.get("world_position_m") else 0.0,
+                        "bev_x": int(obj["bev_xy"][0]) if obj.get("bev_xy") else 0,
+                        "bev_y": int(obj["bev_xy"][1]) if obj.get("bev_xy") else 0,
+                    }
+                    for obj in tracked_objects
+                ],
+                "trajectories": [
+                    {
+                        "track_id": tid,
+                        "points": [{"x": int(p[0]), "y": int(p[1])} for p in pts],
+                    }
+                    for tid, pts in trajectories.items()
+                ],
+            })
+
             frame_idx += 1
             last_overlay = overlay
             last_bev = bev
@@ -784,6 +816,26 @@ class RoadSceneProjector:
 
         cap.release()
         writer.release()
+
+        unity_data = {
+            "video_path": video_path,
+            "fps": fps,
+            "frame_width": frame_w,
+            "frame_height": frame_h,
+            "camera": {k: float(v) for k, v in camera.items()},
+            "road_polygons_uv": [
+                {"points": [{"u": float(pt[0]), "v": float(pt[1])} for pt in poly]}
+                for poly in road_polygons_uv
+            ],
+            "crosswalk_polygons_uv": [
+                {"points": [{"u": float(pt[0]), "v": float(pt[1])} for pt in poly]}
+                for poly in crosswalk_polygons_uv
+            ],
+            "frames": frame_records,
+        }
+        json_path = save_root / f"{stem}_unity.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(unity_data, f, ensure_ascii=False)
 
         outputs: Dict[str, Any] = {
             "video_path": video_path,
@@ -798,6 +850,7 @@ class RoadSceneProjector:
             "last_overlay_image": last_overlay,
             "last_bev_image": last_bev,
             "last_trajectories": last_trajectories,
+            "unity_json_path": str(json_path),
         }
         return outputs
 
