@@ -1119,6 +1119,53 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 361731128}
   m_Mesh: {fileID: -1824426812510449422, guid: b317019a4b15e48e6831f83ac07e65f8, type: 3}
+--- !u!1 &366788196
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 366788198}
+  - component: {fileID: 366788197}
+  m_Layer: 0
+  m_Name: TrajectoryGroup
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &366788197
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 366788196}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ce4cd4d033ca54cb3a8515ec3ed2d9cf, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RoadReconstruction.TrajectoryRenderer
+  lineMaterial: {fileID: 2100000, guid: 6ebeb009a8a69410e80d801aee5c5c97, type: 2}
+  lineWidth: 0.3
+  yOffset: 0.05
+--- !u!4 &366788198
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 366788196}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1663396825}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &377959272
 GameObject:
   m_ObjectHideFlags: 0
@@ -2844,6 +2891,54 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 954097787}
   m_Mesh: {fileID: -6500961996347510970, guid: b317019a4b15e48e6831f83ac07e65f8, type: 3}
+--- !u!1 &1028712665
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1028712667}
+  - component: {fileID: 1028712666}
+  m_Layer: 0
+  m_Name: RoadGroup
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1028712666
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1028712665}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0cab0480132db422f97f63a11f83eaf3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RoadReconstruction.RoadMeshBuilder
+  roadMaterial: {fileID: 2100000, guid: b04b97a822e6d4dfeaba00a45d11fbbe, type: 2}
+  yOffset: 0
+  uvScalePerMeter: 0.1
+  minAreaSqM: 0.5
+--- !u!4 &1028712667
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1028712665}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1663396825}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1031216857
 GameObject:
   m_ObjectHideFlags: 0
@@ -4632,6 +4727,66 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1650740293}
   m_Mesh: {fileID: 4442857275390634010, guid: b317019a4b15e48e6831f83ac07e65f8, type: 3}
+--- !u!1 &1663396823
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1663396825}
+  - component: {fileID: 1663396824}
+  m_Layer: 0
+  m_Name: BEVReconstruction
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1663396824
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1663396823}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ad98e560330a14bb7aba4278519da896, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RoadReconstruction.SceneLoader
+  mode: 0
+  streamingAssetsFileName: scene_data.json
+  absoluteFilePath: 
+  httpUrl: http://localhost:5000/scene
+  loadOnStart: 1
+  sceneOriginOffset: {x: 0, y: 0, z: 0}
+  roadBuilder: {fileID: 1028712666}
+  crosswalkBuilder: {fileID: 1977835106}
+  objectPlacer: {fileID: 1931484738}
+  trajectoryRenderer: {fileID: 366788197}
+  sceneCameraAnchor: {fileID: 314861168}
+  verbose: 1
+--- !u!4 &1663396825
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1663396823}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children:
+  - {fileID: 1028712667}
+  - {fileID: 1977835107}
+  - {fileID: 1931484739}
+  - {fileID: 366788198}
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1001 &1663709974
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -5268,6 +5423,69 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1906271856}
   m_Mesh: {fileID: 8367263129102666219, guid: b317019a4b15e48e6831f83ac07e65f8, type: 3}
+--- !u!1 &1931484737
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1931484739}
+  - component: {fileID: 1931484738}
+  m_Layer: 0
+  m_Name: VehiclesGroup
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1931484738
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1931484737}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 10be5def73db74d47b86646fd7353cda, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RoadReconstruction.ObjectPlacer
+  classPrefabs:
+  - className: car
+    prefab: {fileID: 919132149155446097, guid: 46c2d62b2139540d4a924057b6958aef, type: 3}
+    scale: 1
+    positionOffset: {x: 0, y: 0, z: 0}
+    rotationOffset: {x: 0, y: 0, z: 0}
+  - className: bus
+    prefab: {fileID: 919132149155446097, guid: 19db2266dcf484c6e9308c70f1ea5f2d, type: 3}
+    scale: 1
+    positionOffset: {x: 0, y: 0, z: 0}
+    rotationOffset: {x: 0, y: 0, z: 0}
+  - className: truck
+    prefab: {fileID: 919132149155446097, guid: 19db2266dcf484c6e9308c70f1ea5f2d, type: 3}
+    scale: 1
+    positionOffset: {x: 0, y: 0, z: 0}
+    rotationOffset: {x: 0, y: 0, z: 0}
+  fallbackPrefab: {fileID: 919132149155446097, guid: 46c2d62b2139540d4a924057b6958aef, type: 3}
+  yOffset: 0
+  orientAlongTrajectory: 1
+--- !u!4 &1931484739
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1931484737}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1663396825}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1938184857
 GameObject:
   m_ObjectHideFlags: 0
@@ -5358,6 +5576,54 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1938184857}
   m_Mesh: {fileID: -9122581236215430538, guid: b317019a4b15e48e6831f83ac07e65f8, type: 3}
+--- !u!1 &1977835105
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1977835107}
+  - component: {fileID: 1977835106}
+  m_Layer: 0
+  m_Name: CrosswalkGroup
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1977835106
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1977835105}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 585b79c4c58b1463797619acdf49f3bd, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RoadReconstruction.CrosswalkMeshBuilder
+  crosswalkMaterial: {fileID: 2100000, guid: 7ef8502fd5920472d9b95fc8fed7c821, type: 2}
+  yOffset: 0.02
+  uvScalePerMeter: 0.4
+  minAreaSqM: 0.2
+--- !u!4 &1977835107
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1977835105}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1663396825}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1001 &1983112982
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -31780,3 +32046,4 @@ SceneRoots:
   - {fileID: 3772126363530128302}
   - {fileID: 1180369109}
   - {fileID: 3566803094881098208}
+  - {fileID: 1663396825}

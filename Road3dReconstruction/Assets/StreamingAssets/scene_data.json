@@ -1,0 +1,33 @@
+{
+  "camera": {"height_m": 6.5, "pitch_deg": -12.0, "roll_deg": 0.0, "vfov_deg": 65.0},
+  "road_polygons": [
+    {"points": [
+      {"x": -5.0, "z": 2.0}, {"x": 5.0, "z": 2.0},
+      {"x": 6.0, "z": 18.0}, {"x": 6.0, "z": 32.0},
+      {"x": 5.0, "z": 45.0}, {"x": -5.0, "z": 45.0},
+      {"x": -6.0, "z": 32.0}, {"x": -6.0, "z": 18.0}
+    ]}
+  ],
+  "crosswalk_polygons": [
+    {"points": [
+      {"x": -5.5, "z": 6.0}, {"x": 5.5, "z": 6.0},
+      {"x": 5.5, "z": 8.0}, {"x": -5.5, "z": 8.0}
+    ]}
+  ],
+  "objects": [
+    {"track_id": 1, "class_name": "car", "confidence": 0.9, "x_m": -1.8, "z_m": 14.0},
+    {"track_id": 2, "class_name": "car", "confidence": 0.85, "x_m": 1.8, "z_m": 28.0},
+    {"track_id": 3, "class_name": "person", "confidence": 0.7, "x_m": 3.5, "z_m": 7.0}
+  ],
+  "trajectories": [
+    {"track_id": 1, "points": [
+      {"x": -1.8, "z": 8.0}, {"x": -1.8, "z": 10.0},
+      {"x": -1.8, "z": 12.0}, {"x": -1.8, "z": 14.0}
+    ]},
+    {"track_id": 2, "points": [
+      {"x": 1.8, "z": 36.0}, {"x": 1.8, "z": 33.0},
+      {"x": 1.8, "z": 30.0}, {"x": 1.8, "z": 28.0}
+    ]}
+  ],
+  "frame_index": 0
+}
