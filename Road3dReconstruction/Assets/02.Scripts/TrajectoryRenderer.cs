@@ -7,7 +7,7 @@ namespace RoadReconstruction
     {
         [Header("Line Style")]
         public Material lineMaterial;
-        public float lineWidth = 0.25f;
+        public float lineWidth = 0.05f;
 
         [Tooltip("Y offset (m) so the trajectory renders above road and crosswalk meshes.")]
         public float yOffset = 0.05f;

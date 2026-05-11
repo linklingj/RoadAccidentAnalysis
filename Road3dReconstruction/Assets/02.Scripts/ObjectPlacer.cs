@@ -16,7 +16,7 @@ namespace RoadReconstruction
             [Tooltip("Local position offset relative to the placement point.")]
             public Vector3 positionOffset = Vector3.zero;
             [Tooltip("Local Euler rotation offset (degrees).")]
-            public Vector3 rotationOffset = Vector3.zero;
+            public Vector3 rotationOffset = new Vector3(-90f, 0f, 0f);
         }
 
         [Header("Class -> Prefab")]
