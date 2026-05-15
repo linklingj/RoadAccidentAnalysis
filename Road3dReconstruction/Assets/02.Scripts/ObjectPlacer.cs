@@ -100,7 +100,7 @@ namespace RoadReconstruction
             }
         }
 
-        private ClassPrefab ResolveEntry(string className)
+        public ClassPrefab ResolveEntry(string className)
         {
             if (string.IsNullOrEmpty(className)) return null;
             for (int i = 0; i < classPrefabs.Count; i++)
@@ -111,6 +111,10 @@ namespace RoadReconstruction
             }
             return null;
         }
+
+        public GameObject FallbackPrefab => fallbackPrefab;
+
+        public float DefaultYOffset => yOffset;
 
         private static Vector3 ComputeForward(List<ScenePoint> pts)
         {

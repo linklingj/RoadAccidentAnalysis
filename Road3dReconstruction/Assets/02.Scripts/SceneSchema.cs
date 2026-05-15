@@ -49,6 +49,20 @@ namespace RoadReconstruction
     }
 
     [Serializable]
+    public class SceneTrack
+    {
+        public int track_id;
+        public string class_name;
+    }
+
+    [Serializable]
+    public class SceneFrame
+    {
+        public int frame_index;
+        public List<SceneObject> objects = new List<SceneObject>();
+    }
+
+    [Serializable]
     public class SceneData
     {
         public SceneCamera camera = new SceneCamera();
@@ -57,5 +71,13 @@ namespace RoadReconstruction
         public List<SceneObject> objects = new List<SceneObject>();
         public List<SceneTrajectory> trajectories = new List<SceneTrajectory>();
         public int frame_index;
+
+        // Video timeline (empty for single-image scenes).
+        public float fps;
+        public int frame_count;
+        public List<SceneTrack> tracks = new List<SceneTrack>();
+        public List<SceneFrame> frames = new List<SceneFrame>();
+
+        public bool HasTimeline => frames != null && frames.Count >= 2 && fps > 0f;
     }
 }

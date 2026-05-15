@@ -37,6 +37,8 @@ namespace RoadReconstruction
         public CrosswalkMeshBuilder crosswalkBuilder;
         public ObjectPlacer objectPlacer;
         public TrajectoryRenderer trajectoryRenderer;
+        [Tooltip("Drives per-frame vehicle animation when the JSON includes a timeline.")]
+        public VideoPlaybackController playbackController;
 
         [Tooltip("Optional camera transform; if assigned, will be placed at scene origin + camera height to mirror the analysis viewpoint.")]
         public Transform sceneCameraAnchor;
@@ -160,8 +162,21 @@ namespace RoadReconstruction
 
             if (roadBuilder != null) roadBuilder.BuildFromPolygons(data.road_polygons);
             if (crosswalkBuilder != null) crosswalkBuilder.BuildFromPolygons(data.crosswalk_polygons);
-            if (objectPlacer != null) objectPlacer.PlaceObjects(data.objects, data.trajectories);
-            if (trajectoryRenderer != null) trajectoryRenderer.Render(data.trajectories);
+
+            bool hasTimeline = data.HasTimeline;
+            if (hasTimeline && playbackController != null)
+            {
+                // Timeline drives vehicles directly; skip the static placer and trajectory lines.
+                if (objectPlacer != null) objectPlacer.Clear();
+                if (trajectoryRenderer != null) trajectoryRenderer.Clear();
+                playbackController.Initialize(data);
+            }
+            else
+            {
+                if (objectPlacer != null) objectPlacer.PlaceObjects(data.objects, data.trajectories);
+                if (trajectoryRenderer != null) trajectoryRenderer.Render(data.trajectories);
+                if (playbackController != null) playbackController.ClearVehicles();
+            }
 
             if (sceneCameraAnchor != null && data.camera != null && data.camera.height_m > 0f)
             {

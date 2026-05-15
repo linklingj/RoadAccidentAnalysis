@@ -13,7 +13,13 @@
       "mcp__UnityMCP__manage_asset",
       "mcp__UnityMCP__batch_execute",
       "mcp__UnityMCP__manage_components",
-      "mcp__UnityMCP__manage_camera"
+      "mcp__UnityMCP__manage_camera",
+      "mcp__UnityMCP__find_gameobjects",
+      "mcp__UnityMCP__execute_code",
+      "Bash(conda env *)",
+      "Bash(/opt/homebrew/anaconda3/bin/python -c \"import cv2\")",
+      "Bash(/opt/homebrew/anaconda3/envs/dl/bin/python -c \"import cv2; print\\(cv2.__version__\\)\"ㅊcondc)",
+      "Bash(/opt/homebrew/anaconda3/envs/dl/bin/python -c ' *)"
     ]
   }
 }

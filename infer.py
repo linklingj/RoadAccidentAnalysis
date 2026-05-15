@@ -593,6 +593,9 @@ def export_scene_json(
     trajectories: Optional[Dict[int, List[Tuple[int, int]]]] = None,
     cfg: Optional[PipelineConfig] = None,
     frame_index: int = 0,
+    frames_history: Optional[List[Dict[str, Any]]] = None,
+    tracks_registry: Optional[Dict[int, str]] = None,
+    fps: float = 0.0,
 ) -> Dict[str, Any]:
     """Build a Unity-friendly scene description in real-world (meter) coordinates.
 
@@ -646,6 +649,32 @@ def export_scene_json(
             if len(world_pts) >= 2:
                 trajectories_out.append({"track_id": int(tid), "points": world_pts})
 
+    tracks_out: List[Dict[str, Any]] = []
+    if tracks_registry:
+        for tid, cname in tracks_registry.items():
+            tracks_out.append({"track_id": int(tid), "class_name": str(cname)})
+
+    frames_out: List[Dict[str, Any]] = []
+    if frames_history:
+        for entry in frames_history:
+            frame_objs: List[Dict[str, Any]] = []
+            for o in entry.get("objects", []):
+                frame_objs.append(
+                    {
+                        "track_id": int(o.get("track_id", -1)),
+                        "class_name": str(o.get("class_name", "")),
+                        "confidence": round(float(o.get("confidence", 0.0)), 3),
+                        "x_m": round(float(o.get("x_m", 0.0)), 3),
+                        "z_m": round(float(o.get("z_m", 0.0)), 3),
+                    }
+                )
+            frames_out.append(
+                {
+                    "frame_index": int(entry.get("frame_index", 0)),
+                    "objects": frame_objs,
+                }
+            )
+
     return {
         "camera": {
             "height_m": round(cam_h, 4),
@@ -658,6 +687,10 @@ def export_scene_json(
         "objects": objects_out,
         "trajectories": trajectories_out,
         "frame_index": int(frame_index),
+        "fps": round(float(fps), 4),
+        "frame_count": len(frames_out),
+        "tracks": tracks_out,
+        "frames": frames_out,
     }
 
 
@@ -882,6 +915,8 @@ class RoadSceneProjector:
         last_bev = None
         last_trajectories: Dict[int, List[Tuple[int, int]]] = {}
         last_tracked_objects: List[Dict[str, Any]] = []
+        frames_history: List[Dict[str, Any]] = []
+        tracks_registry: Dict[int, str] = {}
 
         while True:
             if frame_idx == 0:
@@ -918,6 +953,28 @@ class RoadSceneProjector:
             writer.write(vis)
             total_detections_2d += len(detections_2d)
             total_tracked += len(tracked_objects)
+
+            frame_objs: List[Dict[str, Any]] = []
+            for o in tracked_objects:
+                tid = o.get("track_id")
+                if tid is None:
+                    continue
+                wp = o.get("world_position_m")
+                if wp is None:
+                    continue
+                cls = str(o.get("class_name", ""))
+                tracks_registry.setdefault(int(tid), cls)
+                frame_objs.append(
+                    {
+                        "track_id": int(tid),
+                        "class_name": cls,
+                        "confidence": float(o.get("confidence", 0.0)),
+                        "x_m": float(wp[0]),
+                        "z_m": float(wp[1]),
+                    }
+                )
+            frames_history.append({"frame_index": frame_idx, "objects": frame_objs})
+
             frame_idx += 1
             last_overlay = overlay
             last_bev = bev
@@ -935,6 +992,9 @@ class RoadSceneProjector:
             trajectories=last_trajectories,
             cfg=self.config,
             frame_index=max(0, frame_idx - 1),
+            frames_history=frames_history,
+            tracks_registry=tracks_registry,
+            fps=fps,
         )
         scene_path = save_root / f"{stem}_scene.json"
         written_scene_paths = write_scene_json(scene_data, scene_path, cfg=self.config)
