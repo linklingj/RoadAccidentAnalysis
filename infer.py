@@ -39,6 +39,9 @@ class PipelineConfig:
     trajectory_max_length: int = 60
     video_recompute_camera_each_frame: bool = False
     device: Optional[Any] = None
+    # Unity 연동: scene JSON을 StreamingAssets로 미러링하여 Unity SceneLoader가 바로 로드
+    unity_streaming_assets_dir: Optional[str] = "Road3dReconstruction/Assets/StreamingAssets"
+    unity_scene_filename: str = "scene_data.json"
 
 
 def _resolve_device(device: Optional[Any]) -> Any:
@@ -310,6 +313,18 @@ def world_to_bev(
     return x_px, y_px
 
 
+def bev_to_world(
+    x_px: float,
+    y_px: float,
+    bev_w: int,
+    bev_h: int,
+    pixels_per_meter: float,
+) -> Tuple[float, float]:
+    x_m = (float(x_px) - bev_w * 0.5) / pixels_per_meter
+    z_m = (bev_h - float(y_px)) / pixels_per_meter
+    return float(x_m), float(z_m)
+
+
 def _draw_bev_grid(canvas: np.ndarray, pixels_per_meter: float) -> None:
     h, w = canvas.shape[:2]
     max_depth_m = int(h / pixels_per_meter)
@@ -570,6 +585,147 @@ def render_image_overlay(
     return overlay
 
 
+def export_scene_json(
+    camera: Dict[str, float],
+    road_polygons_uv: List[np.ndarray],
+    crosswalk_polygons_uv: List[np.ndarray],
+    projected_objects: List[Dict[str, Any]],
+    trajectories: Optional[Dict[int, List[Tuple[int, int]]]] = None,
+    cfg: Optional[PipelineConfig] = None,
+    frame_index: int = 0,
+    frames_history: Optional[List[Dict[str, Any]]] = None,
+    tracks_registry: Optional[Dict[int, str]] = None,
+    fps: float = 0.0,
+) -> Dict[str, Any]:
+    """Build a Unity-friendly scene description in real-world (meter) coordinates.
+
+    Schema is shaped for `JsonUtility.FromJson<T>` consumption (no dictionaries).
+    All polygons are projected from UV to ground plane using the same homography
+    used for BEV rendering. Trajectory points stored in BEV pixel space are
+    inverse-projected back to world meters.
+    """
+    cfg = cfg or PipelineConfig()
+    cam_h = float(cfg.camera_height_m)
+
+    def _poly_to_world(polygons_uv: List[np.ndarray]) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for poly in polygons_uv:
+            if len(poly) > cfg.max_polygon_points:
+                step = max(1, len(poly) // cfg.max_polygon_points)
+                poly = poly[::step]
+            pts: List[Dict[str, float]] = []
+            for u, v in poly:
+                proj = project_uv_to_ground(float(u), float(v), camera, cam_h)
+                if proj is None:
+                    continue
+                pts.append({"x": round(float(proj[0]), 3), "z": round(float(proj[1]), 3)})
+            if len(pts) >= 3:
+                out.append({"points": pts})
+        return out
+
+    objects_out: List[Dict[str, Any]] = []
+    for obj in projected_objects:
+        wp = obj.get("world_position_m")
+        if wp is None:
+            continue
+        track_id = obj.get("track_id")
+        objects_out.append(
+            {
+                "track_id": int(track_id) if track_id is not None else -1,
+                "class_name": str(obj.get("class_name", "")),
+                "confidence": round(float(obj.get("confidence", 0.0)), 3),
+                "x_m": round(float(wp[0]), 3),
+                "z_m": round(float(wp[1]), 3),
+            }
+        )
+
+    trajectories_out: List[Dict[str, Any]] = []
+    if trajectories:
+        for tid, points in trajectories.items():
+            world_pts: List[Dict[str, float]] = []
+            for p in points:
+                wx, wz = bev_to_world(p[0], p[1], cfg.bev_width, cfg.bev_height, cfg.pixels_per_meter)
+                world_pts.append({"x": round(wx, 3), "z": round(wz, 3)})
+            if len(world_pts) >= 2:
+                trajectories_out.append({"track_id": int(tid), "points": world_pts})
+
+    tracks_out: List[Dict[str, Any]] = []
+    if tracks_registry:
+        for tid, cname in tracks_registry.items():
+            tracks_out.append({"track_id": int(tid), "class_name": str(cname)})
+
+    frames_out: List[Dict[str, Any]] = []
+    if frames_history:
+        for entry in frames_history:
+            frame_objs: List[Dict[str, Any]] = []
+            for o in entry.get("objects", []):
+                frame_objs.append(
+                    {
+                        "track_id": int(o.get("track_id", -1)),
+                        "class_name": str(o.get("class_name", "")),
+                        "confidence": round(float(o.get("confidence", 0.0)), 3),
+                        "x_m": round(float(o.get("x_m", 0.0)), 3),
+                        "z_m": round(float(o.get("z_m", 0.0)), 3),
+                    }
+                )
+            frames_out.append(
+                {
+                    "frame_index": int(entry.get("frame_index", 0)),
+                    "objects": frame_objs,
+                }
+            )
+
+    return {
+        "camera": {
+            "height_m": round(cam_h, 4),
+            "pitch_deg": round(float(camera.get("pitch_deg", 0.0)), 4),
+            "roll_deg": round(float(camera.get("roll_deg", 0.0)), 4),
+            "vfov_deg": round(float(camera.get("vfov_deg", 0.0)), 4),
+        },
+        "road_polygons": _poly_to_world(road_polygons_uv),
+        "crosswalk_polygons": _poly_to_world(crosswalk_polygons_uv),
+        "objects": objects_out,
+        "trajectories": trajectories_out,
+        "frame_index": int(frame_index),
+        "fps": round(float(fps), 4),
+        "frame_count": len(frames_out),
+        "tracks": tracks_out,
+        "frames": frames_out,
+    }
+
+
+def write_scene_json(
+    scene: Dict[str, Any],
+    primary_path: Path,
+    cfg: Optional[PipelineConfig] = None,
+) -> List[Path]:
+    """Write the scene JSON to ``primary_path`` and mirror to Unity StreamingAssets."""
+    written: List[Path] = []
+    primary_path.parent.mkdir(parents=True, exist_ok=True)
+    with primary_path.open("w", encoding="utf-8") as f:
+        json.dump(scene, f, ensure_ascii=False)
+    written.append(primary_path)
+
+    cfg = cfg or PipelineConfig()
+    if cfg.unity_streaming_assets_dir:
+        # Resolve relative path against this file's repo root so it works
+        # regardless of the caller's CWD.
+        repo_root = Path(__file__).resolve().parent
+        unity_dir = Path(cfg.unity_streaming_assets_dir)
+        if not unity_dir.is_absolute():
+            unity_dir = repo_root / unity_dir
+        try:
+            unity_dir.mkdir(parents=True, exist_ok=True)
+            unity_path = unity_dir / cfg.unity_scene_filename
+            with unity_path.open("w", encoding="utf-8") as f:
+                json.dump(scene, f, ensure_ascii=False)
+            written.append(unity_path)
+        except OSError:
+            # Unity 프로젝트가 없을 수도 있으므로 mirror 실패는 치명적이지 않음
+            pass
+    return written
+
+
 class RoadSceneProjector:
     def __init__(self, config: Optional[PipelineConfig] = None):
         self.config = config or PipelineConfig()
@@ -618,14 +774,26 @@ class RoadSceneProjector:
             detections=obj_out["detections"],
         )
 
+        scene_data = export_scene_json(
+            camera=camera,
+            road_polygons_uv=road_out["road_polygons_uv"],
+            crosswalk_polygons_uv=crosswalk_out["crosswalk_polygons_uv"],
+            projected_objects=projected_objects,
+            trajectories=None,
+            cfg=self.config,
+            frame_index=0,
+        )
+
         outputs: Dict[str, Any] = {
             "image_path": image_path,
             "camera": camera,
             "road_polygons_uv": road_out["road_polygons_uv"],
+            "crosswalk_polygons_uv": crosswalk_out["crosswalk_polygons_uv"],
             "detections_2d": obj_out["detections"],
             "detections_bev": projected_objects,
             "overlay_image": overlay_image,
             "bev_image": bev_image,
+            "scene_data": scene_data,
         }
 
         if save_dir is not None:
@@ -638,8 +806,12 @@ class RoadSceneProjector:
             cv2.imwrite(str(overlay_path), overlay_image)
             cv2.imwrite(str(bev_path), bev_image)
 
+            scene_path = save_root / f"{stem}_scene.json"
+            written = write_scene_json(scene_data, scene_path, cfg=self.config)
+
             outputs["saved_overlay_path"] = str(overlay_path)
             outputs["saved_bev_path"] = str(bev_path)
+            outputs["saved_scene_paths"] = [str(p) for p in written]
 
         return outputs
 
@@ -742,7 +914,9 @@ class RoadSceneProjector:
         last_overlay = None
         last_bev = None
         last_trajectories: Dict[int, List[Tuple[int, int]]] = {}
-        frame_records: List[Dict[str, Any]] = []
+        last_tracked_objects: List[Dict[str, Any]] = []
+        frames_history: List[Dict[str, Any]] = []
+        tracks_registry: Dict[int, str] = {}
 
         while True:
             if frame_idx == 0:
@@ -780,62 +954,50 @@ class RoadSceneProjector:
             total_detections_2d += len(detections_2d)
             total_tracked += len(tracked_objects)
 
-            frame_records.append({
-                "frame_index": frame_idx,
-                "tracked_objects": [
+            frame_objs: List[Dict[str, Any]] = []
+            for o in tracked_objects:
+                tid = o.get("track_id")
+                if tid is None:
+                    continue
+                wp = o.get("world_position_m")
+                if wp is None:
+                    continue
+                cls = str(o.get("class_name", ""))
+                tracks_registry.setdefault(int(tid), cls)
+                frame_objs.append(
                     {
-                        "track_id": obj.get("track_id") if obj.get("track_id") is not None else -1,
-                        "class_name": obj.get("class_name", ""),
-                        "confidence": float(obj.get("confidence", 0.0)),
-                        "bbox_x1": float(obj["bbox_xyxy"][0]) if obj.get("bbox_xyxy") else 0.0,
-                        "bbox_y1": float(obj["bbox_xyxy"][1]) if obj.get("bbox_xyxy") else 0.0,
-                        "bbox_x2": float(obj["bbox_xyxy"][2]) if obj.get("bbox_xyxy") else 0.0,
-                        "bbox_y2": float(obj["bbox_xyxy"][3]) if obj.get("bbox_xyxy") else 0.0,
-                        "foot_u": float(obj["footpoint_uv"][0]) if obj.get("footpoint_uv") else 0.0,
-                        "foot_v": float(obj["footpoint_uv"][1]) if obj.get("footpoint_uv") else 0.0,
-                        "world_x": float(obj["world_position_m"][0]) if obj.get("world_position_m") else 0.0,
-                        "world_z": float(obj["world_position_m"][1]) if obj.get("world_position_m") else 0.0,
-                        "bev_x": int(obj["bev_xy"][0]) if obj.get("bev_xy") else 0,
-                        "bev_y": int(obj["bev_xy"][1]) if obj.get("bev_xy") else 0,
+                        "track_id": int(tid),
+                        "class_name": cls,
+                        "confidence": float(o.get("confidence", 0.0)),
+                        "x_m": float(wp[0]),
+                        "z_m": float(wp[1]),
                     }
-                    for obj in tracked_objects
-                ],
-                "trajectories": [
-                    {
-                        "track_id": tid,
-                        "points": [{"x": int(p[0]), "y": int(p[1])} for p in pts],
-                    }
-                    for tid, pts in trajectories.items()
-                ],
-            })
+                )
+            frames_history.append({"frame_index": frame_idx, "objects": frame_objs})
 
             frame_idx += 1
             last_overlay = overlay
             last_bev = bev
             last_trajectories = trajectories
+            last_tracked_objects = tracked_objects
 
         cap.release()
         writer.release()
 
-        unity_data = {
-            "video_path": video_path,
-            "fps": fps,
-            "frame_width": frame_w,
-            "frame_height": frame_h,
-            "camera": {k: float(v) for k, v in camera.items()},
-            "road_polygons_uv": [
-                {"points": [{"u": float(pt[0]), "v": float(pt[1])} for pt in poly]}
-                for poly in road_polygons_uv
-            ],
-            "crosswalk_polygons_uv": [
-                {"points": [{"u": float(pt[0]), "v": float(pt[1])} for pt in poly]}
-                for poly in crosswalk_polygons_uv
-            ],
-            "frames": frame_records,
-        }
-        json_path = save_root / f"{stem}_unity.json"
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(unity_data, f, ensure_ascii=False)
+        scene_data = export_scene_json(
+            camera=camera,
+            road_polygons_uv=road_polygons_uv,
+            crosswalk_polygons_uv=crosswalk_polygons_uv,
+            projected_objects=last_tracked_objects,
+            trajectories=last_trajectories,
+            cfg=self.config,
+            frame_index=max(0, frame_idx - 1),
+            frames_history=frames_history,
+            tracks_registry=tracks_registry,
+            fps=fps,
+        )
+        scene_path = save_root / f"{stem}_scene.json"
+        written_scene_paths = write_scene_json(scene_data, scene_path, cfg=self.config)
 
         outputs: Dict[str, Any] = {
             "video_path": video_path,
@@ -850,7 +1012,8 @@ class RoadSceneProjector:
             "last_overlay_image": last_overlay,
             "last_bev_image": last_bev,
             "last_trajectories": last_trajectories,
-            "unity_json_path": str(json_path),
+            "scene_data": scene_data,
+            "saved_scene_paths": [str(p) for p in written_scene_paths],
         }
         return outputs
 

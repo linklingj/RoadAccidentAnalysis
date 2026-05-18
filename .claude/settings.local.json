@@ -3,7 +3,27 @@
     "allow": [
       "Bash(python3 *)",
       "Bash(pip install *)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "mcp__UnityMCP__manage_editor",
+      "mcp__UnityMCP__create_script",
+      "mcp__UnityMCP__refresh_unity",
+      "mcp__UnityMCP__read_console",
+      "mcp__UnityMCP__validate_script",
+      "mcp__UnityMCP__manage_scene",
+      "mcp__UnityMCP__manage_asset",
+      "mcp__UnityMCP__batch_execute",
+      "mcp__UnityMCP__manage_components",
+      "mcp__UnityMCP__manage_camera",
+      "mcp__UnityMCP__find_gameobjects",
+      "mcp__UnityMCP__execute_code",
+      "Bash(conda env *)",
+      "Bash(/opt/homebrew/anaconda3/bin/python -c \"import cv2\")",
+      "Bash(/opt/homebrew/anaconda3/envs/dl/bin/python -c \"import cv2; print\\(cv2.__version__\\)\"ㅊcondc)",
+      "Bash(/opt/homebrew/anaconda3/envs/dl/bin/python -c ' *)",
+      "Bash(awk -F',' 'NR>1 {print $6}' test_metadata.csv)",
+      "Bash(awk -F',' 'NR>1 {print $4}' test_metadata.csv)",
+      "Bash(awk -F',' 'NR>1 {print $5}' test_metadata.csv)",
+      "Bash(/opt/homebrew/anaconda3/envs/dl/bin/python *)"
     ]
   }
 }
