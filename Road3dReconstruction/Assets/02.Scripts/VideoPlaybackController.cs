@@ -38,12 +38,22 @@ namespace RoadReconstruction
         public float yOffset = 0f;
 
         [Header("Heading")]
-        [Tooltip("Sampling distance (in frames) used to estimate the motion direction. Larger = smoother but laggier.")]
-        public int headingWindowFrames = 6;
-        [Tooltip("How fast the vehicle rotates toward its motion vector (deg/sec).")]
-        public float headingSlewDegPerSec = 540f;
-        [Tooltip("Minimum displacement (m) within the heading window to update facing.")]
+        [Tooltip("Length (in frames) of the recent window whose motion trend determines the heading. Larger = smoother but laggier.")]
+        public int headingWindowFrames = 15;
+        [Tooltip("Number of evenly-spaced samples taken within the window for the least-squares trend fit. Higher = smoother.")]
+        [Range(2, 32)] public int headingTrendSamples = 10;
+        [Tooltip("How fast the vehicle rotates toward its trend direction (deg/sec). Lower = stronger temporal smoothing on top of the trend fit.")]
+        public float headingSlewDegPerSec = 240f;
+        [Tooltip("Minimum displacement (m) accumulated across the window to update facing.")]
         public float headingMinDisplacement = 0.05f;
+
+        [Header("Smoothing")]
+        [Tooltip("Replace a sample with the neighbor-interpolated value when it deviates from that interpolation by more than this distance (meters). 0 disables.")]
+        public float outlierMaxDeviationM = 2.5f;
+        [Tooltip("Number of outlier-replacement passes (handles a couple of consecutive spikes).")]
+        public int outlierMaxPasses = 2;
+        [Tooltip("Centered moving-average window (samples) applied after outlier removal. 1 disables smoothing.")]
+        [Range(1, 11)] public int positionSmoothingWindow = 3;
 
         [Header("UI (optional)")]
         public Slider timeSlider;
@@ -160,8 +170,77 @@ namespace RoadReconstruction
             foreach (var pair in byId)
             {
                 if (pair.Value.frames.Count == 0) continue;
+                SmoothTrack(pair.Value);
                 _tracks.Add(pair.Value);
             }
+        }
+
+        private void SmoothTrack(TrackTimeline track)
+        {
+            ApplyOutlierFilter(track);
+            ApplyMovingAverage(track);
+        }
+
+        // Replaces samples whose horizontal distance to the linear interpolation of the previous
+        // and next samples exceeds `outlierMaxDeviationM`. This catches single-frame spikes such as
+        // (0,0) → (100,100) → (0,1): the middle sample is far from lerp(prev,next), so it is pulled
+        // back onto the line between its neighbors. Multiple passes pick up adjacent spikes.
+        private void ApplyOutlierFilter(TrackTimeline track)
+        {
+            if (outlierMaxDeviationM <= 0f) return;
+            var frames = track.frames;
+            var pos = track.positions;
+            int n = pos.Count;
+            if (n < 3) return;
+
+            float thrSq = outlierMaxDeviationM * outlierMaxDeviationM;
+            int passes = Mathf.Max(1, outlierMaxPasses);
+            for (int pass = 0; pass < passes; pass++)
+            {
+                bool changed = false;
+                for (int i = 1; i < n - 1; i++)
+                {
+                    int fPrev = frames[i - 1];
+                    int fCur = frames[i];
+                    int fNext = frames[i + 1];
+                    float denom = fNext - fPrev;
+                    if (denom <= 0f) continue;
+                    float t = (fCur - fPrev) / denom;
+                    Vector3 expected = Vector3.Lerp(pos[i - 1], pos[i + 1], t);
+                    float dx = pos[i].x - expected.x;
+                    float dz = pos[i].z - expected.z;
+                    if (dx * dx + dz * dz > thrSq)
+                    {
+                        pos[i] = new Vector3(expected.x, pos[i].y, expected.z);
+                        changed = true;
+                    }
+                }
+                if (!changed) break;
+            }
+        }
+
+        // Centered moving average over `positionSmoothingWindow` samples. Cheap, robust enough for
+        // residual jitter once the spike filter has done the heavy lifting.
+        private void ApplyMovingAverage(TrackTimeline track)
+        {
+            int w = positionSmoothingWindow;
+            if (w <= 1) return;
+            var pos = track.positions;
+            int n = pos.Count;
+            if (n < 2) return;
+
+            int half = w / 2;
+            var buf = new Vector3[n];
+            for (int i = 0; i < n; i++)
+            {
+                int lo = Mathf.Max(0, i - half);
+                int hi = Mathf.Min(n - 1, i + half);
+                Vector3 sum = Vector3.zero;
+                int count = 0;
+                for (int k = lo; k <= hi; k++) { sum += pos[k]; count++; }
+                buf[i] = sum / count;
+            }
+            for (int i = 0; i < n; i++) pos[i] = buf[i];
         }
 
         private void SpawnVehicles()
@@ -311,44 +390,98 @@ namespace RoadReconstruction
             }
         }
 
+        // Fits a straight line through positions sampled across the trailing window
+        // [frameFloat - headingWindowFrames, frameFloat] using ordinary least squares.
+        // The slope vector is the average velocity in BEV meters per frame — its direction
+        // is the smoothed heading. This is stable against single-frame jitter even when
+        // the spike filter misses something, and against legitimate small swerves.
         private Quaternion ComputeHeading(TrackTimeline track, float frameFloat, Vector3 currentPos)
         {
-            float pastFrame = frameFloat - headingWindowFrames;
-            int pastLow = Mathf.FloorToInt(pastFrame);
-            int pastHigh = pastLow + 1;
-            float pastAlpha = Mathf.Clamp01(pastFrame - pastLow);
+            float window = Mathf.Max(1f, headingWindowFrames);
+            float startFrame = frameFloat - window;
+            int samples = Mathf.Max(2, headingTrendSamples);
 
-            Vector3 pastPos;
-            if (pastLow < track.startFrame)
-            {
-                if (!SampleFrame(track, track.startFrame, out pastPos))
-                {
-                    return track.hasHeading ? track.lastHeading : Quaternion.identity;
-                }
-            }
-            else
-            {
-                if (!SampleFrame(track, pastLow, out var a))
-                {
-                    return track.hasHeading ? track.lastHeading : Quaternion.identity;
-                }
-                if (!SampleFrame(track, pastHigh, out var b))
-                {
-                    b = a;
-                }
-                pastPos = Vector3.Lerp(a, b, pastAlpha);
-            }
-
-            Vector3 motion = currentPos - pastPos;
-            motion.y = 0f;
-            if (motion.sqrMagnitude < headingMinDisplacement * headingMinDisplacement)
+            // Clamp the sampling range to the portion of the track that actually exists.
+            // Outside [startFrame, endFrame] SampleFrame would clamp to an endpoint, so those
+            // pseudo-samples contribute zero motion and bias the fit toward standing still.
+            float lo = Mathf.Max(startFrame, track.startFrame);
+            float hi = Mathf.Min(frameFloat, track.endFrame);
+            if (hi - lo < 1e-3f)
             {
                 return track.hasHeading ? track.lastHeading : Quaternion.identity;
             }
-            Quaternion h = Quaternion.LookRotation(motion.normalized, Vector3.up);
+
+            double sumF = 0.0, sumX = 0.0, sumZ = 0.0;
+            double sumFF = 0.0, sumFX = 0.0, sumFZ = 0.0;
+            int count = 0;
+            Vector3 firstPos = currentPos;
+            Vector3 latestPos = currentPos;
+            for (int s = 0; s < samples; s++)
+            {
+                float t = s / (float)(samples - 1);
+                float f = Mathf.Lerp(lo, hi, t);
+                if (!SampleFrameFloat(track, f, out var p)) continue;
+                if (count == 0) firstPos = p;
+                latestPos = p;
+                sumF += f;
+                sumX += p.x;
+                sumZ += p.z;
+                sumFF += (double)f * f;
+                sumFX += (double)f * p.x;
+                sumFZ += (double)f * p.z;
+                count++;
+            }
+            if (count < 2)
+            {
+                return track.hasHeading ? track.lastHeading : Quaternion.identity;
+            }
+
+            double n = count;
+            double denom = n * sumFF - sumF * sumF;
+            Vector3 dir;
+            if (System.Math.Abs(denom) < 1e-9)
+            {
+                // Window collapsed to a single frame value — fall back to endpoint delta.
+                dir = latestPos - firstPos;
+            }
+            else
+            {
+                float slopeX = (float)((n * sumFX - sumF * sumX) / denom);
+                float slopeZ = (float)((n * sumFZ - sumF * sumZ) / denom);
+                dir = new Vector3(slopeX, 0f, slopeZ);
+            }
+
+            // Slope is meters-per-frame; the total displacement implied by the trend over the
+            // window is `dir * (hi - lo)`. Compare that against the min-displacement gate.
+            float effectiveWindow = hi - lo;
+            float displacementSq = dir.sqrMagnitude * effectiveWindow * effectiveWindow;
+            if (displacementSq < headingMinDisplacement * headingMinDisplacement)
+            {
+                return track.hasHeading ? track.lastHeading : Quaternion.identity;
+            }
+
+            Quaternion h = Quaternion.LookRotation(dir.normalized, Vector3.up);
             track.lastHeading = h;
             track.hasHeading = true;
             return h;
+        }
+
+        private static bool SampleFrameFloat(TrackTimeline track, float frame, out Vector3 pos)
+        {
+            int low = Mathf.FloorToInt(frame);
+            int high = low + 1;
+            if (!SampleFrame(track, low, out var a))
+            {
+                pos = Vector3.zero;
+                return false;
+            }
+            if (!SampleFrame(track, high, out var b))
+            {
+                b = a;
+            }
+            float alpha = Mathf.Clamp01(frame - low);
+            pos = Vector3.Lerp(a, b, alpha);
+            return true;
         }
 
         private static bool SampleFrame(TrackTimeline track, int frameIndex, out Vector3 pos)

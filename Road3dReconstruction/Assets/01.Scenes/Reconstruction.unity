@@ -229,9 +229,13 @@ MonoBehaviour:
   playbackSpeed: 1
   loop: 1
   yOffset: 0
-  headingWindowFrames: 6
-  headingSlewDegPerSec: 540
+  headingWindowFrames: 15
+  headingTrendSamples: 15
+  headingSlewDegPerSec: 240
   headingMinDisplacement: 0.05
+  outlierMaxDeviationM: 0.9
+  outlierMaxPasses: 2
+  positionSmoothingWindow: 3
   timeSlider: {fileID: 2145245568}
   playPauseButton: {fileID: 1138670609}
   playPauseLabel: {fileID: 1676401352}
@@ -1135,9 +1139,9 @@ RectTransform:
   - {fileID: 2145245567}
   m_Father: {fileID: 1675227256}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
-  m_AnchorMin: {x: 0, y: 0}
-  m_AnchorMax: {x: 1, y: 0}
-  m_AnchoredPosition: {x: 0, y: 24}
+  m_AnchorMin: {x: 0, y: 1}
+  m_AnchorMax: {x: 1, y: 1}
+  m_AnchoredPosition: {x: 0, y: -120}
   m_SizeDelta: {x: -48, y: 90}
   m_Pivot: {x: 0.5, y: 0}
 --- !u!114 &1381604133
@@ -1568,7 +1572,7 @@ MonoBehaviour:
   classPrefabs:
   - className: car
     prefab: {fileID: 919132149155446097, guid: 46c2d62b2139540d4a924057b6958aef, type: 3}
-    scale: 0.18
+    scale: 0.25
     positionOffset: {x: 0, y: 0, z: 0}
     rotationOffset: {x: -90, y: 0, z: 0}
   - className: bus
@@ -1583,12 +1587,12 @@ MonoBehaviour:
     rotationOffset: {x: 0, y: 0, z: 0}
   - className: riders
     prefab: {fileID: 6488826972771884260, guid: 5b47e8ac1ce6c5c479313da4094e8caf, type: 3}
-    scale: 0.18
+    scale: 0.2
     positionOffset: {x: 0, y: 0, z: 0}
     rotationOffset: {x: 0, y: 180, z: 0}
   - className: person
     prefab: {fileID: 6488826972771884260, guid: 5b47e8ac1ce6c5c479313da4094e8caf, type: 3}
-    scale: 0.18
+    scale: 0.25
     positionOffset: {x: 0, y: 0, z: 0}
     rotationOffset: {x: 0, y: 180, z: 0}
   fallbackPrefab: {fileID: 919132149155446097, guid: 46c2d62b2139540d4a924057b6958aef, type: 3}
