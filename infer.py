@@ -817,24 +817,11 @@ class RoadSceneProjector:
         cap.release()
         writer.release()
 
-        def _poly_to_world(polygons_uv):
-            result = []
-            for poly in polygons_uv:
-                pts = []
-                for pt in poly:
-                    proj = project_uv_to_ground(float(pt[0]), float(pt[1]), camera, self.config.camera_height_m)
-                    if proj is not None:
-                        pts.append({"x": proj[0], "z": proj[1]})
-                if len(pts) >= 3:
-                    result.append({"points": pts})
-            return result
-
         unity_data = {
             "video_path": video_path,
             "fps": fps,
             "frame_width": frame_w,
             "frame_height": frame_h,
-            "camera_height_m": self.config.camera_height_m,
             "camera": {k: float(v) for k, v in camera.items()},
             "road_polygons_uv": [
                 {"points": [{"u": float(pt[0]), "v": float(pt[1])} for pt in poly]}
@@ -844,8 +831,6 @@ class RoadSceneProjector:
                 {"points": [{"u": float(pt[0]), "v": float(pt[1])} for pt in poly]}
                 for poly in crosswalk_polygons_uv
             ],
-            "road_polygons_world": _poly_to_world(road_polygons_uv),
-            "crosswalk_polygons_world": _poly_to_world(crosswalk_polygons_uv),
             "frames": frame_records,
         }
         json_path = save_root / f"{stem}_unity.json"

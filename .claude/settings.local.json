@@ -3,15 +3,7 @@
     "allow": [
       "Bash(python3 *)",
       "Bash(pip install *)",
-      "Bash(python *)",
-      "mcp__UnityMCP__script_apply_edits",
-      "mcp__UnityMCP__read_console",
-      "mcp__UnityMCP__refresh_unity",
-      "mcp__UnityMCP__find_gameobjects",
-      "mcp__UnityMCP__manage_components",
-      "mcp__UnityMCP__manage_editor",
-      "mcp__UnityMCP__manage_scene",
-      "mcp__UnityMCP__manage_camera"
+      "Bash(python *)"
     ]
   }
 }
