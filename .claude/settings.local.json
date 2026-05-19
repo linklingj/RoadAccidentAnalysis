@@ -13,7 +13,11 @@
       "mcp__UnityMCP__manage_asset",
       "mcp__UnityMCP__batch_execute",
       "mcp__UnityMCP__manage_components",
-      "mcp__UnityMCP__manage_camera"
+      "mcp__UnityMCP__manage_camera",
+      "Bash(xargs grep -l \"conf\\\\|threshold\\\\|NMS\\\\|augment\")",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(head *)",
+      "PowerShell(Get-Content *)"
     ]
   }
 }

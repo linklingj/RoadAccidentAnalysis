@@ -81,4 +81,6 @@ cctv-object-dataset/
 cctv-road-dataset/
 cctv-roadseg-dataset/
 cctv-crosswalk-dataset/
+cctv-object-dataset-coco/
 PerspectiveFields/
+rf-detr-large-2026.pth

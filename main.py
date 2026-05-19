@@ -9,6 +9,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--road-model", type=str, default="runs/segment/0405-road/weights/best.pt", help="Road YOLO model path")
     parser.add_argument("--crosswalk-model", type=str, default="runs/segment/0407-crosswalk/weights/best.pt", help="Crosswalk YOLO model path")
     parser.add_argument("--object-model", type=str, default="runs/segment/0401-object/weights/best.pt", help="Object YOLO model path")
+    parser.add_argument("--use-rfdetr-object", action="store_true", help="YOLO 대신 RF-DETR 객체 탐지 모델 사용")
+    parser.add_argument("--rfdetr-object-model", type=str, default="runs/detect/rfdetr-object/best_checkpoint.pth", help="RF-DETR checkpoint 경로")
     parser.add_argument("--perspective-version", type=str, default="Paramnet-360Cities-edina-centered", help="PerspectiveFields model version")
     parser.add_argument("--road-conf", type=float, default=0.25, help="Road model confidence threshold")
     parser.add_argument("--object-conf", type=float, default=0.15, help="Object model confidence threshold")
@@ -17,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bev-width", type=int, default=960, help="BEV image width")
     parser.add_argument("--bev-height", type=int, default=960, help="BEV image height")
     parser.add_argument("--device", type=str, default=None, help="Inference device. e.g., 'cpu', '0', 'cuda:0'")
+    parser.add_argument("--no-clahe", action="store_true", help="Disable CLAHE preprocessing")
     return parser
 
 
@@ -40,6 +43,8 @@ def main() -> None:
         road_model_path=args.road_model,
         crosswalk_model_path=args.crosswalk_model,
         object_model_path=args.object_model,
+        object_detector_type="rfdetr" if args.use_rfdetr_object else "yolo",
+        rfdetr_object_model_path=args.rfdetr_object_model,
         perspective_version=args.perspective_version,
         road_conf=args.road_conf,
         object_conf=args.object_conf,
@@ -47,6 +52,7 @@ def main() -> None:
         pixels_per_meter=args.ppm,
         bev_width=args.bev_width,
         bev_height=args.bev_height,
+        use_clahe=not args.no_clahe,
         device=parsed_device,
     )
 
