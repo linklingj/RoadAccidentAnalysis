@@ -27,7 +27,7 @@ class PipelineConfig:
     object_model_path: str = DEFAULT_OBJECT_MODEL_PATH
     perspective_version: str = DEFAULT_PERSPECTIVE_VERSION
     road_conf: float = 0.25
-    object_conf: float = 0.15
+    object_conf: float = 0.1
     crosswalk_conf: float = 0.15
     camera_height_m: float = 6.5
     pixels_per_meter: float = 42.0
