@@ -132,6 +132,74 @@ def _extract_crosswalk_polygons(result: Any) -> List[np.ndarray]:
         polygons.append(np.asarray(poly, dtype=np.float32))
     return polygons
 
+def _footpoint_from_mask_robust(
+    contour: Optional[np.ndarray],
+    mask_raster: Optional[np.ndarray],
+    bbox_xyxy: Tuple[float, float, float, float],
+) -> Tuple[float, float]:
+    """Estimate the ground contact point of a vehicle mask with sub-pixel precision.
+
+    Picking a single argmax(y) pixel makes the footpoint twitchy because mask edges
+    fluctuate by 1-3 px between frames. Instead, sample the bottom rows of the mask,
+    take the median x per row, then fit a 2nd-order polynomial x(y) and return the
+    point at the deepest y. Falls back gracefully when the mask is too thin or
+    missing.
+    """
+    x1, y1, x2, y2 = bbox_xyxy
+    bbox_h = max(1.0, float(y2 - y1))
+    k = int(np.clip(round(bbox_h * 0.08), 3, 12))
+
+    fallback_x = (x1 + x2) * 0.5
+    fallback_y = y2
+
+    if mask_raster is not None and mask_raster.size > 0:
+        rows_with_pixels = np.flatnonzero(mask_raster.any(axis=1))
+        if rows_with_pixels.size == 0:
+            return float(fallback_x), float(fallback_y)
+        y_bot = int(rows_with_pixels[-1])
+        y_lo = max(0, y_bot - k + 1)
+        ys: List[float] = []
+        xs: List[float] = []
+        for y in range(y_lo, y_bot + 1):
+            row = mask_raster[y]
+            xs_active = np.flatnonzero(row)
+            if xs_active.size == 0:
+                continue
+            ys.append(float(y))
+            xs.append(float(np.median(xs_active)))
+        if len(ys) >= 3:
+            ys_arr = np.asarray(ys, dtype=np.float64)
+            xs_arr = np.asarray(xs, dtype=np.float64)
+            try:
+                a, b, c = np.polyfit(ys_arr, xs_arr, 2)
+                y_star = float(ys_arr.max())
+                x_star = float(a * y_star * y_star + b * y_star + c)
+                return x_star, y_star
+            except (np.linalg.LinAlgError, ValueError):
+                pass
+        if len(ys) >= 1:
+            return float(xs[-1]), float(ys[-1])
+        return float(fallback_x), float(fallback_y)
+
+    if contour is not None and contour.size > 0:
+        cy = contour[:, 1]
+        y_bot = float(cy.max())
+        band = contour[cy >= y_bot - max(2.0, bbox_h * 0.05)]
+        if band.shape[0] >= 3:
+            ys_arr = band[:, 1].astype(np.float64)
+            xs_arr = band[:, 0].astype(np.float64)
+            try:
+                a, b, c = np.polyfit(ys_arr, xs_arr, 2)
+                y_star = float(ys_arr.max())
+                x_star = float(a * y_star * y_star + b * y_star + c)
+                return x_star, y_star
+            except (np.linalg.LinAlgError, ValueError):
+                pass
+        return float(np.median(band[:, 0])), float(y_bot)
+
+    return float(fallback_x), float(fallback_y)
+
+
 def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
     detections: List[Dict[str, Any]] = []
     if result is None or result.boxes is None:
@@ -139,7 +207,12 @@ def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
 
     names = result.names if hasattr(result, "names") else {}
     masks_xy = result.masks.xy if result.masks is not None else None
+    masks_data = result.masks.data if result.masks is not None else None
     track_ids = result.boxes.id  # None when using predict(), Tensor when using track()
+
+    img_h, img_w = (None, None)
+    if hasattr(result, "orig_shape") and result.orig_shape is not None:
+        img_h, img_w = int(result.orig_shape[0]), int(result.orig_shape[1])
 
     for i, box in enumerate(result.boxes):
         x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -150,14 +223,23 @@ def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
         if class_name == "attention" or class_name == "crosswalk":
             continue
 
-        foot_x = (x1 + x2) * 0.5
-        foot_y = y2
+        contour_i: Optional[np.ndarray] = None
         if masks_xy is not None and i < len(masks_xy):
-            contour = np.asarray(masks_xy[i], dtype=np.float32)
-            if contour.size > 0:
-                lowest_idx = int(np.argmax(contour[:, 1]))
-                foot_x = float(contour[lowest_idx, 0])
-                foot_y = float(contour[lowest_idx, 1])
+            contour_i = np.asarray(masks_xy[i], dtype=np.float32)
+
+        raster_i: Optional[np.ndarray] = None
+        if masks_data is not None and i < len(masks_data):
+            mask_tensor = masks_data[i]
+            if hasattr(mask_tensor, "cpu"):
+                raster_i = mask_tensor.detach().cpu().numpy()
+            else:
+                raster_i = np.asarray(mask_tensor)
+            raster_i = (raster_i > 0.5).astype(np.uint8)
+            if img_h is not None and img_w is not None:
+                if raster_i.shape != (img_h, img_w):
+                    raster_i = cv2.resize(raster_i, (img_w, img_h), interpolation=cv2.INTER_NEAREST)
+
+        foot_x, foot_y = _footpoint_from_mask_robust(contour_i, raster_i, (x1, y1, x2, y2))
 
         track_id = int(track_ids[i].item()) if track_ids is not None else None
 
@@ -390,6 +472,86 @@ def project_uv_to_ground(
     return x_m, z_m
 
 
+def project_uv_to_ground_with_cov(
+    u: float,
+    v: float,
+    camera: Dict[str, float],
+    camera_height_m: float,
+    sigma_uv_px: float = 1.5,
+    ray_y_min: float = 0.05,
+) -> Optional[Tuple[float, float, float, float, float]]:
+    """Project a pixel to the ground plane and propagate UV noise to (x, z) covariance.
+
+    Returns (x_m, z_m, cov_xx, cov_xz, cov_zz). Returns None when the ray points too
+    close to horizontal (ground projection is then very unstable; clamp via ray_y_min).
+    """
+    focal = camera["focal_px"]
+    if focal <= 1e-6:
+        return None
+    if sigma_uv_px <= 0.0:
+        sigma_uv_px = 1.0
+
+    cx = camera["cx"]
+    cy = camera["cy"]
+    roll_rad = math.radians(camera["roll_deg"])
+    pitch_rad = math.radians(camera["pitch_deg"])
+
+    x_norm = (u - cx) / focal
+    y_norm = (v - cy) / focal
+    ray = _camera_ray_to_world(x_norm, y_norm, roll_rad, pitch_rad)
+
+    ry = float(ray[1])
+    if ry < ray_y_min:
+        return None
+
+    t = camera_height_m / ry
+    if t <= 0:
+        return None
+
+    x_m = float(t * ray[0])
+    z_m = float(t * ray[2])
+    if not (math.isfinite(x_m) and math.isfinite(z_m)):
+        return None
+    if z_m <= 0:
+        return None
+
+    # Jacobian of (x_m, z_m) w.r.t. (u, v):
+    #   ray = R(x_norm, y_norm), with x_norm = (u-cx)/f, y_norm = (v-cy)/f
+    #   x_m = camera_height * ray_x / ray_y
+    #   z_m = camera_height * ray_z / ray_y
+    cr, sr = math.cos(roll_rad), math.sin(roll_rad)
+    cp, sp = math.cos(pitch_rad), math.sin(pitch_rad)
+
+    # dray/dx_norm and dray/dy_norm (from _camera_ray_to_world)
+    drx_dxn, drx_dyn = cr, -sr
+    dry_dxn, dry_dyn = cp * sr, cp * cr
+    drz_dxn, drz_dyn = sp * sr, sp * cr
+
+    inv_f = 1.0 / focal
+    h = float(camera_height_m)
+    rx, rz = float(ray[0]), float(ray[2])
+
+    # d(x_m)/dray_x = h/ry, d(x_m)/dray_y = -h*rx/ry^2
+    dxm_drx = h / ry
+    dxm_dry = -h * rx / (ry * ry)
+    dzm_drx = 0.0
+    dzm_drz = h / ry
+    dzm_dry = -h * rz / (ry * ry)
+
+    # Chain to (x_norm, y_norm) then to (u, v) via inv_f.
+    dxm_du = (dxm_drx * drx_dxn + dxm_dry * dry_dxn) * inv_f
+    dxm_dv = (dxm_drx * drx_dyn + dxm_dry * dry_dyn) * inv_f
+    dzm_du = (dzm_drx * drx_dxn + dzm_drz * drz_dxn + dzm_dry * dry_dxn) * inv_f
+    dzm_dv = (dzm_drx * drx_dyn + dzm_drz * drz_dyn + dzm_dry * dry_dyn) * inv_f
+
+    s2 = float(sigma_uv_px) * float(sigma_uv_px)
+    cov_xx = s2 * (dxm_du * dxm_du + dxm_dv * dxm_dv)
+    cov_zz = s2 * (dzm_du * dzm_du + dzm_dv * dzm_dv)
+    cov_xz = s2 * (dxm_du * dzm_du + dxm_dv * dzm_dv)
+
+    return x_m, z_m, float(cov_xx), float(cov_xz), float(cov_zz)
+
+
 def world_to_bev(
     x_m: float,
     z_m: float,
@@ -466,15 +628,18 @@ def _project_objects_to_bev(
     projected: List[Dict[str, Any]] = []
     for det in detections:
         foot_u, foot_v = det["footpoint_uv"]
-        proj = project_uv_to_ground(float(foot_u), float(foot_v), camera, cfg.camera_height_m)
+        proj = project_uv_to_ground_with_cov(
+            float(foot_u), float(foot_v), camera, cfg.camera_height_m
+        )
         if proj is None:
             continue
 
-        x_m, z_m = proj
+        x_m, z_m, cxx, cxz, czz = proj
         x_px, y_px = world_to_bev(x_m, z_m, cfg.bev_width, cfg.bev_height, cfg.pixels_per_meter)
 
         item = dict(det)
         item["world_position_m"] = [x_m, z_m]
+        item["world_cov"] = [cxx, cxz, czz]
         item["bev_xy"] = [x_px, y_px]
         projected.append(item)
     return projected
@@ -548,6 +713,152 @@ class BEVObjectTracker:
             if len(track["history"]) >= 2
         }
         return tracked_objects, trajectories
+
+
+def smooth_tracks_rts(
+    track_observations: Dict[int, List[Dict[str, Any]]],
+    fps: float,
+    q_pos: float = 0.5,
+    q_vel: float = 0.5,
+    r_floor: float = 1e-3,
+) -> Dict[int, Dict[int, Dict[str, float]]]:
+    """Forward-backward (RTS) smoothing of per-track BEV positions.
+
+    Each observation is a dict with keys: ``frame_index``, ``x_m``, ``z_m``,
+    and optional ``cov_xx``, ``cov_xz``, ``cov_zz``. Returns a nested mapping
+    ``{track_id: {frame_index: {x, z, vx, vz, x_var, z_var}}}`` with smoothed
+    state mean + marginal position variance.
+
+    State vector: [x, z, vx, vz]. Constant-velocity dynamics, white-noise jerk
+    process model. Q is integrated over dt between consecutive observations,
+    so gaps are handled naturally.
+    """
+    if fps is None or fps <= 1e-6:
+        fps = 30.0
+    base_dt = 1.0 / float(fps)
+    qp = float(q_pos)
+    qv = float(q_vel)
+    smoothed_out: Dict[int, Dict[int, Dict[str, float]]] = {}
+
+    for track_id, obs_list in track_observations.items():
+        if len(obs_list) == 0:
+            continue
+        obs_sorted = sorted(obs_list, key=lambda o: int(o["frame_index"]))
+        n = len(obs_sorted)
+
+        means: List[np.ndarray] = []
+        covs: List[np.ndarray] = []
+        Fs: List[np.ndarray] = []
+        Qs: List[np.ndarray] = []
+        priors_mean: List[np.ndarray] = []
+        priors_cov: List[np.ndarray] = []
+
+        first = obs_sorted[0]
+        x0 = float(first["x_m"])
+        z0 = float(first["z_m"])
+        rxx0 = max(float(first.get("cov_xx", 0.0)), r_floor)
+        rzz0 = max(float(first.get("cov_zz", 0.0)), r_floor)
+        # Initial state: position from measurement, velocity unknown.
+        m_post = np.array([x0, z0, 0.0, 0.0], dtype=np.float64)
+        P_post = np.diag([rxx0, rzz0, 25.0, 25.0])  # 5 m/s std velocity prior
+        means.append(m_post.copy())
+        covs.append(P_post.copy())
+
+        prev_frame = int(first["frame_index"])
+        for i in range(1, n):
+            obs = obs_sorted[i]
+            cur_frame = int(obs["frame_index"])
+            frames_gap = max(1, cur_frame - prev_frame)
+            dt = frames_gap * base_dt
+
+            F = np.array([
+                [1.0, 0.0, dt, 0.0],
+                [0.0, 1.0, 0.0, dt],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ])
+            # Discrete white-noise acceleration model along each axis (decoupled).
+            dt2 = dt * dt
+            dt3 = dt2 * dt
+            dt4 = dt2 * dt2
+            qx = np.array([
+                [dt4 / 4.0, dt3 / 2.0],
+                [dt3 / 2.0, dt2],
+            ]) * qp
+            qv_block = np.array([
+                [dt4 / 4.0, dt3 / 2.0],
+                [dt3 / 2.0, dt2],
+            ]) * qv
+            Q = np.zeros((4, 4))
+            Q[0:2, 0:2] = np.array([[qx[0, 0], 0.0], [0.0, qx[0, 0]]])
+            Q[0, 2] = qx[0, 1]
+            Q[2, 0] = qx[1, 0]
+            Q[1, 3] = qv_block[0, 1]
+            Q[3, 1] = qv_block[1, 0]
+            Q[2, 2] = qx[1, 1]
+            Q[3, 3] = qv_block[1, 1]
+
+            m_pred = F @ m_post
+            P_pred = F @ P_post @ F.T + Q
+
+            priors_mean.append(m_pred.copy())
+            priors_cov.append(P_pred.copy())
+            Fs.append(F.copy())
+            Qs.append(Q.copy())
+
+            cxx = max(float(obs.get("cov_xx", 0.0)), r_floor)
+            cxz = float(obs.get("cov_xz", 0.0))
+            czz = max(float(obs.get("cov_zz", 0.0)), r_floor)
+            R = np.array([[cxx, cxz], [cxz, czz]])
+            H = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+            z_meas = np.array([float(obs["x_m"]), float(obs["z_m"])])
+
+            y = z_meas - H @ m_pred
+            S = H @ P_pred @ H.T + R
+            try:
+                S_inv = np.linalg.inv(S)
+            except np.linalg.LinAlgError:
+                S_inv = np.linalg.pinv(S)
+            K = P_pred @ H.T @ S_inv
+
+            m_post = m_pred + K @ y
+            P_post = (np.eye(4) - K @ H) @ P_pred
+
+            means.append(m_post.copy())
+            covs.append(P_post.copy())
+            prev_frame = cur_frame
+
+        # RTS backward sweep.
+        sm_means = [m.copy() for m in means]
+        sm_covs = [P.copy() for P in covs]
+        for i in range(n - 2, -1, -1):
+            F_next = Fs[i]
+            P_pred_next = priors_cov[i]
+            m_pred_next = priors_mean[i]
+            try:
+                P_pred_inv = np.linalg.inv(P_pred_next)
+            except np.linalg.LinAlgError:
+                P_pred_inv = np.linalg.pinv(P_pred_next)
+            C = covs[i] @ F_next.T @ P_pred_inv
+            sm_means[i] = means[i] + C @ (sm_means[i + 1] - m_pred_next)
+            sm_covs[i] = covs[i] + C @ (sm_covs[i + 1] - P_pred_next) @ C.T
+
+        per_frame: Dict[int, Dict[str, float]] = {}
+        for i, obs in enumerate(obs_sorted):
+            fi = int(obs["frame_index"])
+            m = sm_means[i]
+            P = sm_covs[i]
+            per_frame[fi] = {
+                "x": float(m[0]),
+                "z": float(m[1]),
+                "vx": float(m[2]),
+                "vz": float(m[3]),
+                "x_var": float(max(P[0, 0], 0.0)),
+                "z_var": float(max(P[1, 1], 0.0)),
+            }
+        smoothed_out[int(track_id)] = per_frame
+
+    return smoothed_out
 
 
 def render_bev_scene(
@@ -718,6 +1029,7 @@ def export_scene_json(
         if wp is None:
             continue
         track_id = obj.get("track_id")
+        cov = obj.get("world_cov") or [0.0, 0.0, 0.0]
         objects_out.append(
             {
                 "track_id": int(track_id) if track_id is not None else -1,
@@ -725,6 +1037,12 @@ def export_scene_json(
                 "confidence": round(float(obj.get("confidence", 0.0)), 3),
                 "x_m": round(float(wp[0]), 3),
                 "z_m": round(float(wp[1]), 3),
+                "x_m_smoothed": round(float(wp[0]), 3),
+                "z_m_smoothed": round(float(wp[1]), 3),
+                "vx_m": 0.0,
+                "vz_m": 0.0,
+                "x_var": round(float(cov[0]), 6),
+                "z_var": round(float(cov[2]), 6),
             }
         )
 
@@ -748,13 +1066,23 @@ def export_scene_json(
         for entry in frames_history:
             frame_objs: List[Dict[str, Any]] = []
             for o in entry.get("objects", []):
+                raw_x = float(o.get("x_m", 0.0))
+                raw_z = float(o.get("z_m", 0.0))
+                sm_x = float(o.get("x_m_smoothed", raw_x))
+                sm_z = float(o.get("z_m_smoothed", raw_z))
                 frame_objs.append(
                     {
                         "track_id": int(o.get("track_id", -1)),
                         "class_name": str(o.get("class_name", "")),
                         "confidence": round(float(o.get("confidence", 0.0)), 3),
-                        "x_m": round(float(o.get("x_m", 0.0)), 3),
-                        "z_m": round(float(o.get("z_m", 0.0)), 3),
+                        "x_m": round(raw_x, 3),
+                        "z_m": round(raw_z, 3),
+                        "x_m_smoothed": round(sm_x, 3),
+                        "z_m_smoothed": round(sm_z, 3),
+                        "vx_m": round(float(o.get("vx_m", 0.0)), 4),
+                        "vz_m": round(float(o.get("vz_m", 0.0)), 4),
+                        "x_var": round(float(o.get("x_var", 0.0)), 6),
+                        "z_var": round(float(o.get("z_var", 0.0)), 6),
                     }
                 )
             frames_out.append(
@@ -1089,6 +1417,7 @@ class RoadSceneProjector:
                     continue
                 cls = str(o.get("class_name", ""))
                 tracks_registry.setdefault(int(tid), cls)
+                cov = o.get("world_cov") or [0.0, 0.0, 0.0]
                 frame_objs.append(
                     {
                         "track_id": int(tid),
@@ -1096,6 +1425,9 @@ class RoadSceneProjector:
                         "confidence": float(o.get("confidence", 0.0)),
                         "x_m": float(wp[0]),
                         "z_m": float(wp[1]),
+                        "cov_xx": float(cov[0]),
+                        "cov_xz": float(cov[1]),
+                        "cov_zz": float(cov[2]),
                     }
                 )
             frames_history.append({"frame_index": frame_idx, "objects": frame_objs})
@@ -1108,6 +1440,43 @@ class RoadSceneProjector:
 
         cap.release()
         writer.release()
+
+        # Offline forward-backward (RTS) smoothing per track.
+        track_observations: Dict[int, List[Dict[str, Any]]] = {}
+        for entry in frames_history:
+            fi = int(entry.get("frame_index", 0))
+            for o in entry.get("objects", []):
+                tid = int(o.get("track_id", -1))
+                if tid < 0:
+                    continue
+                track_observations.setdefault(tid, []).append({
+                    "frame_index": fi,
+                    "x_m": float(o["x_m"]),
+                    "z_m": float(o["z_m"]),
+                    "cov_xx": float(o.get("cov_xx", 0.0)),
+                    "cov_xz": float(o.get("cov_xz", 0.0)),
+                    "cov_zz": float(o.get("cov_zz", 0.0)),
+                })
+        smoothed_tracks = smooth_tracks_rts(track_observations, fps=fps)
+        for entry in frames_history:
+            fi = int(entry.get("frame_index", 0))
+            for o in entry.get("objects", []):
+                tid = int(o.get("track_id", -1))
+                sm = smoothed_tracks.get(tid, {}).get(fi)
+                if sm is None:
+                    o["x_m_smoothed"] = float(o["x_m"])
+                    o["z_m_smoothed"] = float(o["z_m"])
+                    o["vx_m"] = 0.0
+                    o["vz_m"] = 0.0
+                    o["x_var"] = float(o.get("cov_xx", 0.0))
+                    o["z_var"] = float(o.get("cov_zz", 0.0))
+                else:
+                    o["x_m_smoothed"] = sm["x"]
+                    o["z_m_smoothed"] = sm["z"]
+                    o["vx_m"] = sm["vx"]
+                    o["vz_m"] = sm["vz"]
+                    o["x_var"] = sm["x_var"]
+                    o["z_var"] = sm["z_var"]
 
         scene_data = export_scene_json(
             camera=camera,
