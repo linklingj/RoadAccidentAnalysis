@@ -17,7 +17,11 @@ from ultralytics import YOLO
 DEFAULT_ROAD_MODEL_PATH = "runs/segment/0401-road/weights/best.pt"
 DEFAULT_CROSSWALK_MODEL_PATH = "runs/segment/0406-crosswalk/weights/best.pt"
 DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0401-object/weights/best.pt"
+DEFAULT_RFDETR_OBJECT_MODEL_PATH = "runs/detect/rfdetr-object/best_checkpoint.pth"
 DEFAULT_PERSPECTIVE_VERSION = "Paramnet-360Cities-edina-centered"
+
+# cctv-object-dataset/data.yaml names 순서와 동일하게 유지
+OBJECT_CLASS_NAMES: List[str] = ["attention", "bus", "car", "crosswalk", "person", "riders", "truck"]
 
 
 @dataclass
@@ -25,6 +29,9 @@ class PipelineConfig:
     road_model_path: str = DEFAULT_ROAD_MODEL_PATH
     crosswalk_model_path: str = DEFAULT_CROSSWALK_MODEL_PATH
     object_model_path: str = DEFAULT_OBJECT_MODEL_PATH
+    # "yolo" | "rfdetr"
+    object_detector_type: str = "yolo"
+    rfdetr_object_model_path: str = DEFAULT_RFDETR_OBJECT_MODEL_PATH
     perspective_version: str = DEFAULT_PERSPECTIVE_VERSION
     road_conf: float = 0.25
     object_conf: float = 0.1
@@ -38,6 +45,7 @@ class PipelineConfig:
     track_max_missed_frames: int = 10
     trajectory_max_length: int = 60
     video_recompute_camera_each_frame: bool = False
+    use_clahe: bool = True
     device: Optional[Any] = None
     # Unity 연동: scene JSON을 StreamingAssets로 미러링하여 Unity SceneLoader가 바로 로드
     unity_streaming_assets_dir: Optional[str] = "Road3dReconstruction/Assets/StreamingAssets"
@@ -93,6 +101,15 @@ def _load_perspective_model(version: str, device: Any):
     torch_device = _perspective_torch_device(device)
     pf_model = pf_model.to(torch_device)
     return pf_model
+
+
+def _apply_clahe(image_bgr: np.ndarray, clip_limit: float = 2.0, tile_size: int = 8) -> np.ndarray:
+    """야간·역광 CCTV 영상의 명도 불균일을 보정한다 (CLAHE on L channel)."""
+    lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
+    l = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
 
 
 def _extract_road_polygons(result: Any) -> List[np.ndarray]:
@@ -213,6 +230,78 @@ def infer_object_model(
     return {
         "raw_result": result,
         "detections": _extract_object_detections(result),
+    }
+
+
+def _load_rfdetr_model(model_path: str) -> Any:
+    try:
+        from rfdetr import RFDETRLarge  # type: ignore
+    except ImportError:
+        raise ImportError("rfdetr 패키지가 없습니다. `pip install rfdetr supervision` 을 실행하세요.")
+    return RFDETRLarge(pretrain_weights=model_path)
+
+
+def _extract_rfdetr_detections(
+    detections: Any,
+    class_names: List[str],
+) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    if detections is None or len(detections) == 0:
+        return results
+
+    xyxy = detections.xyxy          # (N, 4) numpy
+    confs = detections.confidence   # (N,)
+    cls_ids = detections.class_id   # (N,)
+    track_ids = getattr(detections, "tracker_id", None)
+
+    for i in range(len(xyxy)):
+        x1, y1, x2, y2 = float(xyxy[i][0]), float(xyxy[i][1]), float(xyxy[i][2]), float(xyxy[i][3])
+        cls_id = int(cls_ids[i])
+        conf = float(confs[i])
+        class_name = class_names[cls_id] if cls_id < len(class_names) else str(cls_id)
+
+        if class_name in ("attention", "crosswalk"):
+            continue
+
+        # 마스크 없음 → bbox 하단 중앙을 footpoint로 사용
+        foot_x = (x1 + x2) * 0.5
+        foot_y = y2
+
+        track_id = int(track_ids[i]) if track_ids is not None else None
+
+        results.append({
+            "detection_id": i,
+            "class_id": cls_id,
+            "class_name": class_name,
+            "confidence": conf,
+            "bbox_xyxy": [x1, y1, x2, y2],
+            "footpoint_uv": [foot_x, foot_y],
+            "track_id": track_id,
+        })
+    return results
+
+
+def infer_object_model_rfdetr(
+    image_bgr: np.ndarray,
+    model: Any,
+    conf: float,
+    class_names: List[str],
+    sv_tracker: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """RF-DETR 모델로 객체를 탐지하고 (선택적으로) supervision ByteTrack으로 추적한다."""
+    import PIL.Image  # type: ignore
+
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    image_pil = PIL.Image.fromarray(image_rgb)
+
+    detections = model.predict(image_pil, threshold=conf)
+
+    if sv_tracker is not None:
+        detections = sv_tracker.update_with_detections(detections)
+
+    return {
+        "raw_result": detections,
+        "detections": _extract_rfdetr_detections(detections, class_names),
     }
 
 
@@ -732,13 +821,27 @@ class RoadSceneProjector:
         self.device = _resolve_device(self.config.device)
         self.road_model = YOLO(self.config.road_model_path)
         self.crosswalk_model = YOLO(self.config.crosswalk_model_path)
-        self.object_model = YOLO(self.config.object_model_path)
         self.perspective_model = _load_perspective_model(self.config.perspective_version, self.device)
+
+        self._use_rfdetr = self.config.object_detector_type == "rfdetr"
+        if self._use_rfdetr:
+            self.object_model = _load_rfdetr_model(self.config.rfdetr_object_model_path)
+            try:
+                import supervision as sv  # type: ignore
+                self._sv_tracker = sv.ByteTrack()
+            except ImportError:
+                raise ImportError("supervision 패키지가 없습니다. `pip install supervision` 을 실행하세요.")
+        else:
+            self.object_model = YOLO(self.config.object_model_path)
+            self._sv_tracker = None
 
     def run(self, image_path: str, save_dir: Optional[str] = None) -> Dict[str, Any]:
         image_bgr = cv2.imread(image_path)
         if image_bgr is None:
             raise FileNotFoundError(f"Failed to read image: {image_path}")
+
+        if self.config.use_clahe:
+            image_bgr = _apply_clahe(image_bgr)
 
         road_out = infer_road_model(
             image_bgr=image_bgr,
@@ -752,12 +855,20 @@ class RoadSceneProjector:
             conf=self.config.crosswalk_conf,
             device=self.device,
         )
-        obj_out = infer_object_model(
-            image_bgr=image_bgr,
-            model=self.object_model,
-            conf=self.config.object_conf,
-            device=self.device,
-        )
+        if self._use_rfdetr:
+            obj_out = infer_object_model_rfdetr(
+                image_bgr=image_bgr,
+                model=self.object_model,
+                conf=self.config.object_conf,
+                class_names=OBJECT_CLASS_NAMES,
+            )
+        else:
+            obj_out = infer_object_model(
+                image_bgr=image_bgr,
+                model=self.object_model,
+                conf=self.config.object_conf,
+                device=self.device,
+            )
 
         camera = estimate_camera_params(image_bgr, self.perspective_model)
         bev_image, projected_objects = render_bev_scene(
@@ -823,13 +934,22 @@ class RoadSceneProjector:
         camera: Dict[str, float],
         tracker: BEVObjectTracker,
     ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]], List[Dict[str, Any]], Dict[int, List[Tuple[int, int]]]]:
-        obj_out = infer_object_model(
-            image_bgr=frame_bgr,
-            model=self.object_model,
-            conf=self.config.object_conf,
-            device=self.device,
-            use_tracker=True,
-        )
+        if self._use_rfdetr:
+            obj_out = infer_object_model_rfdetr(
+                image_bgr=frame_bgr,
+                model=self.object_model,
+                conf=self.config.object_conf,
+                class_names=OBJECT_CLASS_NAMES,
+                sv_tracker=self._sv_tracker,
+            )
+        else:
+            obj_out = infer_object_model(
+                image_bgr=frame_bgr,
+                model=self.object_model,
+                conf=self.config.object_conf,
+                device=self.device,
+                use_tracker=True,
+            )
         projected = _project_objects_to_bev(obj_out["detections"], camera, self.config)
         tracked_objects, trajectories = tracker.update(projected)
         track_id_map = {
@@ -871,6 +991,9 @@ class RoadSceneProjector:
         if not ok or first_frame is None:
             cap.release()
             raise RuntimeError(f"Video has no readable frame: {video_path}")
+
+        if self.config.use_clahe:
+            first_frame = _apply_clahe(first_frame)
 
         # Road model is intentionally run once for static-camera video.
         road_out = infer_road_model(
@@ -925,6 +1048,8 @@ class RoadSceneProjector:
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     break
+                if self.config.use_clahe:
+                    frame = _apply_clahe(frame)
 
             if self.config.video_recompute_camera_each_frame and frame_idx > 0:
                 camera = estimate_camera_params(frame, self.perspective_model)
