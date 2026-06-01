@@ -38,7 +38,25 @@ namespace RoadReconstruction
         public float x_m;
         public float z_m;
 
+        // Python-side offline RTS smoother output. Missing in legacy JSONs (defaults to 0)
+        // — ToWorldSmoothed falls back to raw (x_m, z_m) in that case.
+        public float x_m_smoothed;
+        public float z_m_smoothed;
+        public float vx_m;
+        public float vz_m;
+        public float x_var;
+        public float z_var;
+
         public Vector3 ToWorld(float y = 0f) { return new Vector3(x_m, y, z_m); }
+
+        public Vector3 ToWorldSmoothed(float y = 0f)
+        {
+            if (x_m_smoothed == 0f && z_m_smoothed == 0f && (x_m != 0f || z_m != 0f))
+            {
+                return new Vector3(x_m, y, z_m);
+            }
+            return new Vector3(x_m_smoothed, y, z_m_smoothed);
+        }
     }
 
     [Serializable]
