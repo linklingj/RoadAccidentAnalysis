@@ -47,13 +47,13 @@ namespace RoadReconstruction
         [Tooltip("Minimum displacement (m) accumulated across the window to update facing.")]
         public float headingMinDisplacement = 0.05f;
 
-        [Header("Smoothing")]
-        [Tooltip("Replace a sample with the neighbor-interpolated value when it deviates from that interpolation by more than this distance (meters). 0 disables.")]
-        public float outlierMaxDeviationM = 2.5f;
+        [Header("Smoothing (fallback for raw-only JSONs)")]
+        [Tooltip("Python-side RTS smoother already removes jitter; keep these off unless loading a legacy raw-only JSON. Replace a sample with the neighbor-interpolated value when it deviates from that interpolation by more than this distance (meters). 0 disables.")]
+        public float outlierMaxDeviationM = 0f;
         [Tooltip("Number of outlier-replacement passes (handles a couple of consecutive spikes).")]
         public int outlierMaxPasses = 2;
         [Tooltip("Centered moving-average window (samples) applied after outlier removal. 1 disables smoothing.")]
-        [Range(1, 11)] public int positionSmoothingWindow = 3;
+        [Range(1, 11)] public int positionSmoothingWindow = 1;
 
         [Header("UI (optional)")]
         public Slider timeSlider;
@@ -160,7 +160,7 @@ namespace RoadReconstruction
                         timeline.className = obj.class_name;
                     }
                     timeline.frames.Add(fi);
-                    timeline.positions.Add(new Vector3(obj.x_m, yOffset, obj.z_m));
+                    timeline.positions.Add(obj.ToWorldSmoothed(yOffset));
                     if (fi < timeline.startFrame) timeline.startFrame = fi;
                     if (fi > timeline.endFrame) timeline.endFrame = fi;
                 }
