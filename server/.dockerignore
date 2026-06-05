@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+.git
+.venv
+output
+input
+runs
+yolo26l-seg.pt
+yolo26s-seg.pt
+cctv-*-dataset
+Road3dReconstruction/Library
+Road3dReconstruction/Temp
+Road3dReconstruction/Build
+Road3dReconstruction/Logs

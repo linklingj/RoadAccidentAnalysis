@@ -58,6 +58,38 @@ namespace RoadReconstruction
             StartCoroutine(LoadCoroutine());
         }
 
+        // External callers (e.g. AppFlowController after a successful upload) feed
+        // the JSON they already have, bypassing the SourceMode switch entirely.
+        public void LoadFromJson(string json)
+        {
+            if (string.IsNullOrEmpty(json))
+            {
+                LogError("LoadFromJson called with empty payload.");
+                return;
+            }
+            SceneData data;
+            try
+            {
+                data = JsonUtility.FromJson<SceneData>(json);
+            }
+            catch (System.Exception ex)
+            {
+                LogError("Failed to parse scene JSON: " + ex.Message);
+                return;
+            }
+            if (data == null)
+            {
+                LogError("Parsed SceneData is null.");
+                return;
+            }
+            ApplyScene(data);
+            LastLoaded = data;
+            if (verbose)
+            {
+                Debug.Log($"[SceneLoader] (in-memory) roads={data.road_polygons.Count}, crosswalks={data.crosswalk_polygons.Count}, objects={data.objects.Count}, trajectories={data.trajectories.Count}");
+            }
+        }
+
         public IEnumerator LoadCoroutine()
         {
             string json = null;
