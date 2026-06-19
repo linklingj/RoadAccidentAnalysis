@@ -41,21 +41,21 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 SAMPLE_META = [
     {
         "id": "sample1",
-        "name": "교차로 씬",
-        "desc": "차량 3대 추적 · BEV 투영 · 3D 재구성",
-        "file": WEB_DIR / "data" / "scene_data.json",
+        "name": "교차로1 씬",
+        "desc": "교차로 추돌 사고",
+        "file": WEB_DIR / "data" / "sample1_scene.json",
     },
     {
         "id": "sample2",
-        "name": "도로 씬",
-        "desc": "차선 검출 · 횡단보도 인식 · 궤적 분석",
-        "file": WEB_DIR / "data" / "scene_data.json",
+        "name": "교차로2 씬",
+        "desc": "교차로 추돌 사고",
+        "file": WEB_DIR / "data" / "sample2_scene.json",
     },
     {
         "id": "sample3",
-        "name": "타임라인 씬",
-        "desc": "영상 동기 재생 · 프레임별 위치 추적",
-        "file": WEB_DIR / "data" / "scene_data.json",
+        "name": "도로 씬",
+        "desc": "일반 도로 추돌 사고",
+        "file": WEB_DIR / "data" / "sample3_scene.json",
     },
 ]
 _SAMPLE_BY_ID = {s["id"]: s for s in SAMPLE_META}

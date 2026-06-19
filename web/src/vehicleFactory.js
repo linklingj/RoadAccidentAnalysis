@@ -1,27 +1,24 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-// Vehicles are rendered from a low-poly GLTF car model (assets/coupe.glb); other
-// classes (pedestrians, riders, trucks, buses) keep procedural stand-ins. Each
-// object's forward axis is +Z and its base sits on Y = 0, so placing it at a
-// ground point and yawing +Z toward the motion vector orients it correctly.
+// Vehicles are rendered from GLTF models; other classes (pedestrians, riders)
+// keep procedural stand-ins. Each object's forward axis is +Z and its base
+// sits on Y = 0, so placing it at a ground point and yawing +Z toward the
+// motion vector orients it correctly.
 
-// Classes drawn with the GLB car model. Unknown classes fall back to the car
-// too (they are most often generic vehicles); pedestrians/riders/trucks/buses
-// keep their distinct procedural shapes below.
-const GLB_CLASSES = new Set(['car']);
-const GLB_MODEL_URL = 'assets/coupe.glb';
-// Real-world car length the model is normalised to (its longest horizontal
-// axis maps to this many metres) before per-instance styling.
-const MODEL_TARGET_LENGTH_M = 4.4;
-// Flip to -1 if the model ends up facing away from its direction of travel.
-const MODEL_FORWARD_SIGN = 1;
+// Per-class GLB configs. `targetLen` is the real-world length (metres) the
+// model is normalised to. `forwardSign` flips orientation if needed (-1).
+// Unknown vehicle classes fall back to the car config.
+const GLB_CONFIGS = {
+  car:   { url: 'assets/coupe.glb', targetLen: 4.4, forwardSign: 1 },
+  bus:   { url: 'assets/coupe.glb', targetLen: 5.5, forwardSign: 1 },
+  truck: { url: 'assets/armor.glb', targetLen: 4.0, forwardSign: 1 },
+};
+const GLB_FALLBACK_CONFIG = GLB_CONFIGS.car;
 
 // Procedural fallbacks. Dimensions are (width = lateral X, height = Y,
 // length = forward Z) in metres; lengths are compact to read at scene scale.
 const CLASS_SHAPES = {
-  truck: { kind: 'box', size: [2.5, 3.0, 4.0] },
-  bus: { kind: 'box', size: [2.6, 3.2, 5.5] },
   riders: { kind: 'box', size: [0.8, 1.7, 1.1] },
   person: { kind: 'capsule', radius: 0.3, height: 1.7 },
 };
@@ -31,33 +28,41 @@ const FALLBACK_BOX = { kind: 'box', size: [1.8, 1.6, 2.25] };
 // apply to procedural shapes only; `scale` scales every object. DEFAULT_SCALE is
 // the slider's resting value, used as the reference at which a GLB car renders at
 // its real-world MODEL_TARGET_LENGTH_M.
-const DEFAULT_SCALE = 0.6;
+const DEFAULT_SCALE = 0.35;
 const STYLE = { color: '#ffffff', scale: DEFAULT_SCALE, lengthScale: 1.4 };
 
-// Cached source model + a load promise so vehicles can be created synchronously
-// once preloaded. Null until loaded (or if loading failed → procedural fallback).
-let glbSource = null;
-let glbPromise = null;
+// Per-scene normalization factor set by computeSceneVehicleScale() on each load.
+// Multiplied into the rendered scale so vehicles appear consistently sized
+// relative to the road regardless of PPM calibration differences.
+let sceneNormScale = 1.0;
+
+export function setSceneNormScale(factor) {
+  sceneNormScale = (Number.isFinite(factor) && factor > 0) ? factor : 1.0;
+}
+
+// Cached source models keyed by URL. Null value = load failed.
+const glbSources = {};   // url → THREE.Group | null
+const glbLoadMap = {};   // url → Promise
 
 /**
- * Kick off (once) the GLB car model load and cache the result. Resolves whether
- * or not the load succeeds; on failure GLB classes fall back to a box.
+ * Kick off (once per URL) all GLB model loads and cache results. Resolves when
+ * all loads finish; failed URLs leave their entry as null (procedural fallback).
  */
 export function preloadVehicleModels() {
-  if (glbPromise) return glbPromise;
   const loader = new GLTFLoader();
-  glbPromise = loader
-    .loadAsync(GLB_MODEL_URL)
-    .then((gltf) => {
-      glbSource = gltf.scene;
-      return glbSource;
-    })
-    .catch((err) => {
-      console.warn(`[vehicleFactory] failed to load ${GLB_MODEL_URL}:`, err);
-      glbSource = null;
-      return null;
-    });
-  return glbPromise;
+  const uniqueUrls = [...new Set(Object.values(GLB_CONFIGS).map((c) => c.url))];
+  const promises = uniqueUrls.map((url) => {
+    if (url in glbLoadMap) return glbLoadMap[url];
+    glbLoadMap[url] = loader
+      .loadAsync(url)
+      .then((gltf) => { glbSources[url] = gltf.scene; })
+      .catch((err) => {
+        console.warn(`[vehicleFactory] failed to load ${url}:`, err);
+        glbSources[url] = null;
+      });
+    return glbLoadMap[url];
+  });
+  return Promise.all(promises);
 }
 
 export function setVehicleStyle(partial) {
@@ -70,16 +75,19 @@ export function setVehicleStyle(partial) {
 // a GLB Group). Procedural meshes take the shared colour and a length-stretched
 // scale; GLB cars keep their own materials and scale uniformly relative to the
 // slider's resting value so the default renders at real-world size.
+// sceneNormScale is multiplied in so every scene auto-fits vehicle size to its
+// spatial extent without touching the user's manual scale slider.
 export function styleVehicle(obj) {
   if (!obj) return;
   if (obj.userData && obj.userData.isGLB) {
     const factor = DEFAULT_SCALE > 0 ? STYLE.scale / DEFAULT_SCALE : STYLE.scale;
-    obj.scale.setScalar(factor);
+    obj.scale.setScalar(factor * sceneNormScale);
     return;
   }
   if (obj.isMesh) {
     if (obj.material && obj.material.color) obj.material.color.set(STYLE.color);
-    obj.scale.set(STYLE.scale, STYLE.scale, STYLE.scale * STYLE.lengthScale);
+    const s = STYLE.scale * sceneNormScale;
+    obj.scale.set(s, s, s * STYLE.lengthScale);
   }
 }
 
@@ -106,19 +114,25 @@ export function trackColor(trackId) {
 }
 
 /**
- * Build a vehicle for the given class. GLB classes clone the cached car model
- * (normalised to real-world size, centred, sitting on the ground, facing +Z);
- * other classes get a procedural mesh. The current dev style is applied.
+ * Build a vehicle for the given class. Classes with a GLB_CONFIGS entry clone
+ * their cached model (normalised to real-world size, centred, sitting on the
+ * ground, facing +Z); unknown vehicle classes fall back to the car GLB; classes
+ * with a procedural shape (person, riders) always get a procedural mesh.
  */
 export function createVehicle(className, trackId) {
   const name = (className || '').toLowerCase();
-  if (glbSource && (GLB_CLASSES.has(name) || !CLASS_SHAPES[name])) {
-    const group = new THREE.Group();
-    group.userData.isGLB = true;
-    group.add(normalizeModel(glbSource.clone(true), MODEL_TARGET_LENGTH_M, MODEL_FORWARD_SIGN));
-    group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
-    styleVehicle(group);
-    return group;
+  // person and riders always use procedural shapes
+  if (!CLASS_SHAPES[name] || GLB_CONFIGS[name]) {
+    const cfg = GLB_CONFIGS[name] || GLB_FALLBACK_CONFIG;
+    const src = glbSources[cfg.url];
+    if (src) {
+      const group = new THREE.Group();
+      group.userData.isGLB = true;
+      group.add(normalizeModel(src.clone(true), cfg.targetLen, cfg.forwardSign));
+      group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+      styleVehicle(group);
+      return group;
+    }
   }
   return createProcedural(shapeFor(className));
 }

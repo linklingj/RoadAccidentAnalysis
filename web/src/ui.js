@@ -77,7 +77,7 @@ export class ViewerUI {
     this.devLength.addEventListener('input', emitStyle);
     this.$('devReset').addEventListener('click', () => {
       this.devColor.value = '#ffffff';
-      this.devScale.value = '1';
+      this.devScale.value = '0.35';
       this.devLength.value = '1';
       this._emitVehicleStyle();
     });
@@ -204,12 +204,17 @@ export class ViewerUI {
 
   setInfo(summary) {
     const cam = summary.camera || {};
+    const vs = summary.vehicleScale;
+    const vsLabel = vs
+      ? `${vs.label} (×${vs.multiplier.toFixed(2)}, 단계 ${vs.step}/5)`
+      : '—';
     const rows = [
       ['Mode', summary.mode === 'video' ? `video (${summary.frames} frames @ ${summary.fps.toFixed(2)} fps)` : 'image'],
       ['Roads', summary.roads],
       ['Crosswalks', summary.crosswalks],
       ['Objects', summary.objects],
       ['Tracks', summary.mode === 'video' ? summary.tracks : summary.trajectories],
+      ['차량 크기', vsLabel],
       ['Camera height', cam.height_m != null ? `${cam.height_m} m` : '—'],
       ['Pitch / Roll', cam.pitch_deg != null ? `${cam.pitch_deg.toFixed(1)}° / ${cam.roll_deg.toFixed(1)}°` : '—'],
       ['vFOV', cam.vfov_deg != null ? `${cam.vfov_deg.toFixed(1)}°` : '—'],

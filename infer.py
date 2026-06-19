@@ -16,12 +16,12 @@ from ultralytics import YOLO
 
 DEFAULT_ROAD_MODEL_PATH = "runs/segment/0401-road/weights/best.pt"
 DEFAULT_CROSSWALK_MODEL_PATH = "runs/segment/0406-crosswalk/weights/best.pt"
-DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0401-object/weights/best.pt"
-DEFAULT_RFDETR_OBJECT_MODEL_PATH = "runs/detect/rfdetr-object/best_checkpoint.pth"
+DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0619-object/weights/best.pt"
+DEFAULT_RFDETR_OBJECT_MODEL_PATH = "runs/detect/rfdetr-object-0519/best_checkpoint.pth"
 DEFAULT_PERSPECTIVE_VERSION = "Paramnet-360Cities-edina-centered"
 
 # cctv-object-dataset/data.yaml names 순서와 동일하게 유지
-OBJECT_CLASS_NAMES: List[str] = ["attention", "bus", "car", "crosswalk", "person", "riders", "truck"]
+OBJECT_CLASS_NAMES: List[str] = ["bus", "car", "person", "riders", "truck"]
 
 
 @dataclass
@@ -1023,6 +1023,26 @@ def export_scene_json(
                 out.append({"points": pts})
         return out
 
+    def _bbox_dims_m(
+        bbox: Optional[List[float]],
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Project bbox bottom edge → width_m; top–bottom centres → length_m."""
+        if bbox is None:
+            return None, None
+        x1, y1, x2, y2 = bbox
+        left = project_uv_to_ground(x1, y2, camera, cam_h)
+        right = project_uv_to_ground(x2, y2, camera, cam_h)
+        w = None
+        if left is not None and right is not None:
+            w = round(math.hypot(right[0] - left[0], right[1] - left[1]), 3)
+        cx = (x1 + x2) * 0.5
+        top_g = project_uv_to_ground(cx, y1, camera, cam_h)
+        bot_g = project_uv_to_ground(cx, y2, camera, cam_h)
+        l = None
+        if top_g is not None and bot_g is not None:
+            l = round(math.hypot(top_g[0] - bot_g[0], top_g[1] - bot_g[1]), 3)
+        return w, l
+
     objects_out: List[Dict[str, Any]] = []
     for obj in projected_objects:
         wp = obj.get("world_position_m")
@@ -1030,21 +1050,25 @@ def export_scene_json(
             continue
         track_id = obj.get("track_id")
         cov = obj.get("world_cov") or [0.0, 0.0, 0.0]
-        objects_out.append(
-            {
-                "track_id": int(track_id) if track_id is not None else -1,
-                "class_name": str(obj.get("class_name", "")),
-                "confidence": round(float(obj.get("confidence", 0.0)), 3),
-                "x_m": round(float(wp[0]), 3),
-                "z_m": round(float(wp[1]), 3),
-                "x_m_smoothed": round(float(wp[0]), 3),
-                "z_m_smoothed": round(float(wp[1]), 3),
-                "vx_m": 0.0,
-                "vz_m": 0.0,
-                "x_var": round(float(cov[0]), 6),
-                "z_var": round(float(cov[2]), 6),
-            }
-        )
+        entry: Dict[str, Any] = {
+            "track_id": int(track_id) if track_id is not None else -1,
+            "class_name": str(obj.get("class_name", "")),
+            "confidence": round(float(obj.get("confidence", 0.0)), 3),
+            "x_m": round(float(wp[0]), 3),
+            "z_m": round(float(wp[1]), 3),
+            "x_m_smoothed": round(float(wp[0]), 3),
+            "z_m_smoothed": round(float(wp[1]), 3),
+            "vx_m": 0.0,
+            "vz_m": 0.0,
+            "x_var": round(float(cov[0]), 6),
+            "z_var": round(float(cov[2]), 6),
+        }
+        w_m, l_m = _bbox_dims_m(obj.get("bbox_xyxy"))
+        if w_m is not None:
+            entry["width_m"] = w_m
+        if l_m is not None:
+            entry["length_m"] = l_m
+        objects_out.append(entry)
 
     trajectories_out: List[Dict[str, Any]] = []
     if trajectories:
@@ -1070,21 +1094,25 @@ def export_scene_json(
                 raw_z = float(o.get("z_m", 0.0))
                 sm_x = float(o.get("x_m_smoothed", raw_x))
                 sm_z = float(o.get("z_m_smoothed", raw_z))
-                frame_objs.append(
-                    {
-                        "track_id": int(o.get("track_id", -1)),
-                        "class_name": str(o.get("class_name", "")),
-                        "confidence": round(float(o.get("confidence", 0.0)), 3),
-                        "x_m": round(raw_x, 3),
-                        "z_m": round(raw_z, 3),
-                        "x_m_smoothed": round(sm_x, 3),
-                        "z_m_smoothed": round(sm_z, 3),
-                        "vx_m": round(float(o.get("vx_m", 0.0)), 4),
-                        "vz_m": round(float(o.get("vz_m", 0.0)), 4),
-                        "x_var": round(float(o.get("x_var", 0.0)), 6),
-                        "z_var": round(float(o.get("z_var", 0.0)), 6),
-                    }
-                )
+                fobj: Dict[str, Any] = {
+                    "track_id": int(o.get("track_id", -1)),
+                    "class_name": str(o.get("class_name", "")),
+                    "confidence": round(float(o.get("confidence", 0.0)), 3),
+                    "x_m": round(raw_x, 3),
+                    "z_m": round(raw_z, 3),
+                    "x_m_smoothed": round(sm_x, 3),
+                    "z_m_smoothed": round(sm_z, 3),
+                    "vx_m": round(float(o.get("vx_m", 0.0)), 4),
+                    "vz_m": round(float(o.get("vz_m", 0.0)), 4),
+                    "x_var": round(float(o.get("x_var", 0.0)), 6),
+                    "z_var": round(float(o.get("z_var", 0.0)), 6),
+                }
+                fw_m, fl_m = _bbox_dims_m(o.get("bbox_xyxy"))
+                if fw_m is not None:
+                    fobj["width_m"] = fw_m
+                if fl_m is not None:
+                    fobj["length_m"] = fl_m
+                frame_objs.append(fobj)
             frames_out.append(
                 {
                     "frame_index": int(entry.get("frame_index", 0)),
@@ -1418,18 +1446,20 @@ class RoadSceneProjector:
                 cls = str(o.get("class_name", ""))
                 tracks_registry.setdefault(int(tid), cls)
                 cov = o.get("world_cov") or [0.0, 0.0, 0.0]
-                frame_objs.append(
-                    {
-                        "track_id": int(tid),
-                        "class_name": cls,
-                        "confidence": float(o.get("confidence", 0.0)),
-                        "x_m": float(wp[0]),
-                        "z_m": float(wp[1]),
-                        "cov_xx": float(cov[0]),
-                        "cov_xz": float(cov[1]),
-                        "cov_zz": float(cov[2]),
-                    }
-                )
+                fobj: Dict[str, Any] = {
+                    "track_id": int(tid),
+                    "class_name": cls,
+                    "confidence": float(o.get("confidence", 0.0)),
+                    "x_m": float(wp[0]),
+                    "z_m": float(wp[1]),
+                    "cov_xx": float(cov[0]),
+                    "cov_xz": float(cov[1]),
+                    "cov_zz": float(cov[2]),
+                }
+                bbox = o.get("bbox_xyxy")
+                if bbox is not None:
+                    fobj["bbox_xyxy"] = [float(v) for v in bbox]
+                frame_objs.append(fobj)
             frames_history.append({"frame_index": frame_idx, "objects": frame_objs})
 
             frame_idx += 1

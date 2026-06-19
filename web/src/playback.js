@@ -18,10 +18,11 @@ export class PlaybackController {
     this.playbackSpeed = 1;
     this.loop = true;
     this.yOffset = 0;
-    this.headingWindowFrames = 15;
-    this.headingTrendSamples = 10;
-    this.headingSlewDegPerSec = 240;
+    this.headingWindowFrames = 25;
+    this.headingTrendSamples = 16;
+    this.headingSlewDegPerSec = 180;
     this.headingMinDisplacement = 0.05;
+    this.headingOutlierDegrees = 45;
 
     this.hasTimeline = false;
     this.isPlaying = false;
@@ -182,54 +183,81 @@ export class PlaybackController {
     }
   }
 
-  // Least-squares trend fit over the trailing window.
+  // Robust heading via circular-median outlier filtering over the trailing window.
   _computeHeading(track, frameFloat, currentPos) {
     const window = Math.max(1, this.headingWindowFrames);
-    const startFrame = frameFloat - window;
     const samples = Math.max(2, this.headingTrendSamples);
 
-    const lo = Math.max(startFrame, track.startFrame);
+    const lo = Math.max(frameFloat - window, track.startFrame);
     const hi = Math.min(frameFloat, track.endFrame);
     if (hi - lo < 1e-3) {
       return track.hasHeading ? track.lastHeading : IDENTITY.clone();
     }
 
-    let sumF = 0, sumX = 0, sumZ = 0, sumFF = 0, sumFX = 0, sumFZ = 0, count = 0;
-    let firstPos = currentPos, latestPos = currentPos;
+    // Collect uniformly-spaced sample positions across the window.
+    const pts = [];
     const tmp = new THREE.Vector3();
     for (let s = 0; s < samples; s++) {
-      const tt = s / (samples - 1);
-      const f = lo + (hi - lo) * tt;
+      const f = lo + (hi - lo) * (s / (samples - 1));
       const p = this._sampleFrameFloat(track, f, tmp);
-      if (!p) continue;
-      if (count === 0) firstPos = p.clone();
-      latestPos = p.clone();
-      sumF += f; sumX += p.x; sumZ += p.z;
-      sumFF += f * f; sumFX += f * p.x; sumFZ += f * p.z;
-      count++;
+      if (p) pts.push(p.clone());
     }
-    if (count < 2) {
+    if (pts.length < 2) {
       return track.hasHeading ? track.lastHeading : IDENTITY.clone();
     }
 
-    const n = count;
-    const denom = n * sumFF - sumF * sumF;
-    let dir;
-    if (Math.abs(denom) < 1e-9) {
-      dir = new THREE.Vector3(latestPos.x - firstPos.x, 0, latestPos.z - firstPos.z);
-    } else {
-      const slopeX = (n * sumFX - sumF * sumX) / denom;
-      const slopeZ = (n * sumFZ - sumF * sumZ) / denom;
-      dir = new THREE.Vector3(slopeX, 0, slopeZ);
-    }
-
-    const effectiveWindow = hi - lo;
-    const displacementSq = dir.lengthSq() * effectiveWindow * effectiveWindow;
-    if (displacementSq < this.headingMinDisplacement * this.headingMinDisplacement) {
+    // Minimum overall displacement check (first → last point).
+    const overallDisp = Math.hypot(
+      pts[pts.length - 1].x - pts[0].x,
+      pts[pts.length - 1].z - pts[0].z
+    );
+    if (overallDisp < this.headingMinDisplacement) {
       return track.hasHeading ? track.lastHeading : IDENTITY.clone();
     }
 
-    const q = new THREE.Quaternion().setFromUnitVectors(FORWARD, dir.normalize());
+    // Per-step displacement angles and magnitudes.
+    const stepAngles = [];
+    const stepMags = [];
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i].x - pts[i - 1].x;
+      const dz = pts[i].z - pts[i - 1].z;
+      const magSq = dx * dx + dz * dz;
+      if (magSq < 1e-8) continue;
+      stepAngles.push(Math.atan2(dx, dz));
+      stepMags.push(Math.sqrt(magSq));
+    }
+    if (stepAngles.length === 0) {
+      return track.hasHeading ? track.lastHeading : IDENTITY.clone();
+    }
+
+    // Circular median: wrap all angles relative to the first, sort, take middle.
+    const ref = stepAngles[0];
+    const wrapped = stepAngles.map(a => {
+      let d = a - ref;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      return ref + d;
+    });
+    const sortedW = [...wrapped].sort((a, b) => a - b);
+    const medAngle = sortedW[Math.floor(sortedW.length / 2)];
+
+    // Reject steps that deviate more than headingOutlierDegrees from the median.
+    const threshRad = THREE.MathUtils.degToRad(this.headingOutlierDegrees);
+    let sumSin = 0, sumCos = 0;
+    for (let i = 0; i < stepAngles.length; i++) {
+      if (Math.abs(wrapped[i] - medAngle) > threshRad) continue;
+      sumSin += Math.sin(stepAngles[i]) * stepMags[i];
+      sumCos += Math.cos(stepAngles[i]) * stepMags[i];
+    }
+    // If every step was rejected, fall back to the median angle.
+    if (sumSin === 0 && sumCos === 0) {
+      sumSin = Math.sin(medAngle);
+      sumCos = Math.cos(medAngle);
+    }
+
+    const finalAngle = Math.atan2(sumSin, sumCos);
+    const dir = new THREE.Vector3(Math.sin(finalAngle), 0, Math.cos(finalAngle));
+    const q = new THREE.Quaternion().setFromUnitVectors(FORWARD, dir);
     track.lastHeading = q;
     track.hasHeading = true;
     return q;

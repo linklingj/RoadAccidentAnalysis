@@ -40,7 +40,9 @@
       "Bash(curl -s http://localhost:8765/main.js)",
       "Bash(chromium-cli *)",
       "Bash(pkill -f \"python -m http.server 8765\")",
-      "Skill(claude-in-chrome)"
+      "Skill(claude-in-chrome)",
+      "Bash(node --input-type=module)",
+      "Bash(node -e ' *)"
     ]
   }
 }

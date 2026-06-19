@@ -1,11 +1,11 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-import { hasTimeline, describeScene, objectWorld } from './src/sceneData.js';
+import { hasTimeline, describeScene, objectWorld, computeSceneVehicleScale } from './src/sceneData.js';
 import { buildRoad, buildCrosswalk } from './src/roadBuilder.js';
 import { placeObjects } from './src/objectPlacer.js';
 import { buildTrajectories } from './src/trajectoryRenderer.js';
-import { setVehicleStyle, restyleVehicles, preloadVehicleModels } from './src/vehicleFactory.js';
+import { setVehicleStyle, restyleVehicles, preloadVehicleModels, setSceneNormScale } from './src/vehicleFactory.js';
 import { PlaybackController } from './src/playback.js';
 import { ViewerUI } from './src/ui.js';
 
@@ -116,6 +116,10 @@ function applyScene(data, media = null) {
   roadGroup = buildRoad(data.road_polygons);
   crosswalkGroup = buildCrosswalk(data.crosswalk_polygons);
 
+  // Auto-normalize vehicle scale based on detected vehicle size in this scene.
+  const scaleInfo = computeSceneVehicleScale(data);
+  setSceneNormScale(scaleInfo.multiplier);
+
   if (hasTimeline(data)) {
     staticGroup = new THREE.Group();
     trajectoryGroup = new THREE.Group();
@@ -129,7 +133,9 @@ function applyScene(data, media = null) {
 
   sceneBounds = computeBounds();
   applyView('reset');
-  ui.setInfo(describeScene(data));
+  const summary = describeScene(data);
+  summary.vehicleScale = scaleInfo;
+  ui.setInfo(summary);
   ui.setStatus('');
   syncSpeed();
 }
@@ -257,13 +263,15 @@ function applyAnalysisCamera(cam) {
   const sinP = Math.sin(pitch);
   const cosP = Math.cos(pitch);
 
-  camera.position.set(0, h, 0);
+  // Pull the viewpoint back slightly so the foreground road fits in frame.
+  const pullBack = h * 1.2;
+  camera.position.set(0, h, -pullBack);
 
   // Pivot for OrbitControls = where the view ray hits the ground (y = 0).
   // pitch < 0 ⇒ camera looks downward into +Z.
   let target;
   if (sinP < -1e-3) {
-    const t = -h / sinP; // ray length from the camera to the ground (> 0)
+    const t = -h / sinP; // ray length from original CCTV position to the ground
     target = new THREE.Vector3(0, 0, cosP * t);
   } else {
     // (near-)level camera: just look forward a sensible distance.

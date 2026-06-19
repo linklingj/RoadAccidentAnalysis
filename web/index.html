@@ -227,6 +227,29 @@
                     ◉ CCTV
                 </button>
             </div>
+            <div class="help-wrap">
+                <button class="help-btn" aria-label="조작법 안내">?</button>
+                <div class="help-tooltip" role="tooltip">
+                    <p class="help-title">카메라 조작</p>
+                    <ul class="help-list">
+                        <li><kbd>좌클릭 드래그</kbd><span>회전</span></li>
+                        <li><kbd>우클릭 드래그</kbd><span>이동 (패닝)</span></li>
+                        <li><kbd>스크롤</kbd><span>줌 인 / 아웃</span></li>
+                        <li><kbd>중간 버튼 드래그</kbd><span>이동 (패닝)</span></li>
+                    </ul>
+                    <hr class="help-sep" />
+                    <p class="help-title">객체 선택</p>
+                    <ul class="help-list">
+                        <li><kbd>차량 클릭</kbd><span>차량 시점 (POV)</span></li>
+                        <li><kbd>빈 공간 클릭</kbd><span>자유 시점 복귀</span></li>
+                    </ul>
+                    <hr class="help-sep" />
+                    <p class="help-title">단축키</p>
+                    <ul class="help-list">
+                        <li><kbd>F1</kbd><span>개발자 패널</span></li>
+                    </ul>
+                </div>
+            </div>
         </aside>
 
         <div id="playbackBar" class="disabled">
@@ -267,9 +290,9 @@
                     min="0.2"
                     max="3"
                     step="0.05"
-                    value="0.6"
+                    value="0.35"
                 />
-                <b id="devScaleVal">0.60×</b>
+                <b id="devScaleVal">0.35×</b>
             </label>
             <label class="dev-row"
                 >길이
