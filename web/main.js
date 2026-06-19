@@ -537,15 +537,31 @@ landingMediaInput.addEventListener('change', (e) => {
 async function loadSample(sampleId) {
   ui.setStatus(`샘플 로드 중…`, false, true);
   try {
+    let sceneData = null;
+
     // Try server API first (fastest); fall back to static file.
     if (serverAvailable) {
       const res = await fetch(`api/samples/${sampleId}`, { cache: 'no-store' });
-      if (res.ok) {
-        applyScene(await res.json());
-        return;
-      }
+      if (res.ok) sceneData = await res.json();
     }
-    await loadFromUrl('data/scene_data.json');
+    if (!sceneData) {
+      const res = await fetch('data/scene_data.json', { cache: 'no-cache' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      sceneData = await res.json();
+    }
+
+    // Probe for a matching video file (data/<sampleId>.mp4 / .webm).
+    // Using a HEAD request avoids downloading the video just to check existence.
+    let media = null;
+    for (const ext of ['mp4', 'webm']) {
+      const videoUrl = `data/${sampleId}.${ext}`;
+      try {
+        const vRes = await fetch(videoUrl, { method: 'HEAD', cache: 'no-store' });
+        if (vRes.ok) { media = { url: videoUrl, type: 'video' }; break; }
+      } catch (_) { /* not available */ }
+    }
+
+    applyScene(sceneData, media);
   } catch (err) {
     ui.setStatus(`샘플 로드 실패: ${err.message}`, true);
   }

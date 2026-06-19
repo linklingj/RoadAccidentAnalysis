@@ -94,8 +94,8 @@ body.on-landing #landing { display: block; }
 
 .samples-heading {
   margin: 0 0 20px; text-align: center;
-  font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
-  color: var(--muted); font-weight: 500;
+  font-size: 18px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--muted); font-weight: 700;
 }
 
 .sample-cards {
