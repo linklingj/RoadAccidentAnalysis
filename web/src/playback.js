@@ -65,7 +65,7 @@ export class PlaybackController {
     if (Array.isArray(data.tracks)) {
       for (const t of data.tracks) {
         if (!t || byId.has(t.track_id)) continue;
-        byId.set(t.track_id, newTimeline(t.track_id, t.class_name));
+        byId.set(t.track_id, newTimeline(t.track_id, t.class_name, t.color));
       }
     }
 
@@ -76,10 +76,11 @@ export class PlaybackController {
         if (!obj || obj.track_id < 0) continue;
         let tl = byId.get(obj.track_id);
         if (!tl) {
-          tl = newTimeline(obj.track_id, obj.class_name);
+          tl = newTimeline(obj.track_id, obj.class_name, obj.color);
           byId.set(obj.track_id, tl);
         }
         if (!tl.className && obj.class_name) tl.className = obj.class_name;
+        if (!tl.color && obj.color) tl.color = obj.color;
         const w = objectWorld(obj, this.yOffset);
         tl.frames.push(fi);
         tl.positions.push(new THREE.Vector3(w.x, w.y, w.z));
@@ -97,7 +98,7 @@ export class PlaybackController {
 
   _spawnVehicles() {
     for (const track of this._tracks) {
-      const mesh = createVehicle(track.className, track.trackId);
+      const mesh = createVehicle(track.className, track.trackId, track.color);
       mesh.name = `Vehicle_T${track.trackId}_${track.className}`;
       mesh.visible = false;
       track.instance = mesh;
@@ -308,10 +309,11 @@ export class PlaybackController {
 
 const IDENTITY = new THREE.Quaternion();
 
-function newTimeline(trackId, className) {
+function newTimeline(trackId, className, color) {
   return {
     trackId,
     className: className || '',
+    color: color || '',
     frames: [],
     positions: [],
     startFrame: Number.POSITIVE_INFINITY,

@@ -22,9 +22,9 @@ export class ViewerUI {
     this.playbackBar = this.$('playbackBar');
     this.devPanel = this.$('devPanel');
     this.devColor = this.$('devColor');
-    this.devScale = this.$('devScale');
+    this.vehScale = this.$('vehScale');   // car size slider (always-visible panel)
     this.devLength = this.$('devLength');
-    this.devScaleVal = this.$('devScaleVal');
+    this.vehScaleVal = this.$('vehScaleVal');
     this.devLengthVal = this.$('devLengthVal');
 
     // Left-pane original media (synced to the 3D timeline).
@@ -73,11 +73,11 @@ export class ViewerUI {
     });
     const emitStyle = () => this._emitVehicleStyle();
     this.devColor.addEventListener('input', emitStyle);
-    this.devScale.addEventListener('input', emitStyle);
+    this.vehScale.addEventListener('input', emitStyle);
     this.devLength.addEventListener('input', emitStyle);
     this.$('devReset').addEventListener('click', () => {
       this.devColor.value = '#ffffff';
-      this.devScale.value = '0.35';
+      this.vehScale.value = '0.35';
       this.devLength.value = '1';
       this._emitVehicleStyle();
     });
@@ -126,9 +126,9 @@ export class ViewerUI {
   }
 
   _emitVehicleStyle() {
-    const scale = Number(this.devScale.value) || 1;
+    const scale = Number(this.vehScale.value) || 1;
     const lengthScale = Number(this.devLength.value) || 1;
-    this.devScaleVal.textContent = `${scale.toFixed(2)}×`;
+    this.vehScaleVal.textContent = `${scale.toFixed(2)}×`;
     this.devLengthVal.textContent = `${lengthScale.toFixed(2)}×`;
     this.h.onVehicleStyle({ color: this.devColor.value, scale, lengthScale });
   }

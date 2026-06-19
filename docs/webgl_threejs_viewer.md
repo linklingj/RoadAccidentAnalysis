@@ -47,7 +47,7 @@ Python BEV 분석 결과(scene JSON)를 브라우저에서 3D로 재구성하는
 | `main.js` | 렌더러·씬·조명·그리드·카메라·OrbitControls, scene JSON 로드, `applyScene` 분기, 렌더 루프 |
 | `src/sceneData.js` | JSON 헬퍼: `hasTimeline`, `objectWorld`(smoothed→raw fallback), `signedArea`, `describeScene` |
 | `src/roadBuilder.js` | 도로/횡단보도 polygon → 삼각분할 메시(`THREE.ShapeUtils.triangulateShape`, min-area 필터) |
-| `src/vehicleFactory.js` | car(및 미상 클래스)는 GLB 모델(`assets/coupe.glb`, 첫 사용 전 `preloadVehicleModels()`로 로드 후 clone, 바운딩박스로 실세계 크기·바닥·+Z 전방 정규화), 그 외(truck/bus=박스, person=캡슐, riders)는 절차적 메시 |
+| `src/vehicleFactory.js` | car(및 미상 클래스)는 GLB 모델(`assets/coupe.glb`, 첫 사용 전 `preloadVehicleModels()`로 로드 후 clone, 바운딩박스로 실세계 크기·바닥·+Z 전방 정규화), 그 외(truck/bus=박스, person=캡슐, riders)는 절차적 메시. car는 scene JSON `color`(`white`/`black`)에 따라 페인트 재질을 단색으로 교체한 변형 모델을 캐싱해 렌더(GLB가 단색이라 텍스처 곱연산 틴트로는 흰색 표현 불가 → 재질 교체, 휠/유리는 유지); color 미지정·legacy 씬은 원본 GLB |
 | `src/objectPlacer.js` | 정적 모드: 객체 배치 + 궤적 기반 방향 |
 | `src/trajectoryRenderer.js` | 정적 모드: 트랙별 색상 궤적 라인 |
 | `src/playback.js` | 영상 타임라인 컨트롤러: 트랙 타임라인 구성, 프레임 보간(이진탐색), 최소제곱 추세 heading + 슬루 회전, play/pause/seek/loop/speed |

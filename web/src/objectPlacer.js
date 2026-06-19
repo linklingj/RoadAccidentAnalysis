@@ -21,7 +21,7 @@ export function placeObjects(objects, trajectories, yOffset = 0) {
 
   for (const obj of objects) {
     if (!obj) continue;
-    const mesh = createVehicle(obj.class_name, obj.track_id);
+    const mesh = createVehicle(obj.class_name, obj.track_id, obj.color);
 
     const w = objectWorldRaw(obj, yOffset);
     mesh.position.set(w.x, w.y, w.z);

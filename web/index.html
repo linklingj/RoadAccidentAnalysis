@@ -227,6 +227,18 @@
                     ◉ CCTV
                 </button>
             </div>
+            <label class="panel-row" title="차량 모델 크기 배율">
+                차량 크기
+                <input
+                    id="vehScale"
+                    type="range"
+                    min="0.05"
+                    max="2"
+                    step="0.05"
+                    value="0.35"
+                />
+                <b id="vehScaleVal">0.35×</b>
+            </label>
             <div class="help-wrap">
                 <button class="help-btn" aria-label="조작법 안내">?</button>
                 <div class="help-tooltip" role="tooltip">
@@ -281,18 +293,6 @@
             <label class="dev-row"
                 >색상
                 <input id="devColor" type="color" value="#ffffff" />
-            </label>
-            <label class="dev-row"
-                >크기
-                <input
-                    id="devScale"
-                    type="range"
-                    min="0.2"
-                    max="3"
-                    step="0.05"
-                    value="0.35"
-                />
-                <b id="devScaleVal">0.35×</b>
             </label>
             <label class="dev-row"
                 >길이

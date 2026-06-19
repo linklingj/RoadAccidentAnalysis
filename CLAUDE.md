@@ -155,7 +155,7 @@ CCTV 영상 입력
 - 좌표: 월드 `(x_m, z_m)` → three.js `(x, 0, z)`, Y-up (flat-ground 가정).
 - 이미지 씬(`frames` 없음) → 객체 정적 배치 + 궤적 라인 / 영상 씬(`frames`+`fps`) → 타임라인 재생.
 - 모듈: `main.js`(오케스트레이션, 업로드/폴링) + `src/`(sceneData·roadBuilder·vehicleFactory·objectPlacer·trajectoryRenderer·playback·ui).
-- 차량(car)은 GLB 모델(`web/assets/coupe.glb`)로 렌더(실세계 크기로 정규화). 그 외(truck/bus/person/riders)는 클래스별 절차적 도형(박스/캡슐, 흰색 통일).
+- 차량(car)은 GLB 모델(`web/assets/coupe.glb`)로 렌더(실세계 크기로 정규화). 추론 시 차체 픽셀 명도로 흑/백을 판정해(`infer.py:_estimate_car_color`, scene JSON의 `color` 필드) 검/흰 두 변형으로 렌더한다(`vehicleFactory.js`가 단색 GLB의 페인트 재질을 색별로 교체; 영상 모드는 트랙별 다수결 색). 그 외(truck/bus/person/riders)는 클래스별 절차적 도형(박스/캡슐, 흰색 통일)이며 색 판정 대상이 아니다.
 - 상세 문서: `docs/webgl_threejs_viewer.md`.
 
 ## Planned Components (미구현)

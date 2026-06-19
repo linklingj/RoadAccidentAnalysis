@@ -16,6 +16,20 @@ const GLB_CONFIGS = {
 };
 const GLB_FALLBACK_CONFIG = GLB_CONFIGS.car;
 
+// Cars are detected as black/white upstream (scene JSON `color`). The coupe GLB
+// ships a single dark, palette-textured paint, so we can't just tint the
+// material (black × any colour stays dark). Instead we rebuild the paint as a
+// solid colour and drop the baked map, keeping wheels/glass distinct. One
+// variant model is built per colour and reused; unknown colours fall back to the
+// untouched GLB so legacy scenes look exactly as before.
+const CAR_URL = GLB_CONFIGS.car.url;
+const CAR_PAINT = {
+  white: { color: 0xe9e9ec, metalness: 0.15, roughness: 0.5 },
+  black: { color: 0x1b1b1f, metalness: 0.35, roughness: 0.45 },
+};
+const CAR_WHEEL = { color: 0x202022, metalness: 0.5, roughness: 0.55 };
+const carVariants = {}; // colorKey ('white'|'black') → THREE.Group (recoloured source)
+
 // Procedural fallbacks. Dimensions are (width = lateral X, height = Y,
 // length = forward Z) in metres; lengths are compact to read at scene scale.
 const CLASS_SHAPES = {
@@ -119,12 +133,13 @@ export function trackColor(trackId) {
  * ground, facing +Z); unknown vehicle classes fall back to the car GLB; classes
  * with a procedural shape (person, riders) always get a procedural mesh.
  */
-export function createVehicle(className, trackId) {
+export function createVehicle(className, trackId, color) {
   const name = (className || '').toLowerCase();
   // person and riders always use procedural shapes
   if (!CLASS_SHAPES[name] || GLB_CONFIGS[name]) {
     const cfg = GLB_CONFIGS[name] || GLB_FALLBACK_CONFIG;
-    const src = glbSources[cfg.url];
+    // Cars get a black/white repaint; every other class uses the GLB as-is.
+    const src = (name === 'car') ? carSourceFor(color) : glbSources[cfg.url];
     if (src) {
       const group = new THREE.Group();
       group.userData.isGLB = true;
@@ -135,6 +150,44 @@ export function createVehicle(className, trackId) {
     }
   }
   return createProcedural(shapeFor(className));
+}
+
+// Resolve the car source model for a detected colour. 'white'/'black' return a
+// lazily-built, cached recoloured clone; anything else (missing colour, legacy
+// scenes) returns the untouched GLB.
+function carSourceFor(color) {
+  const base = glbSources[CAR_URL];
+  if (!base) return null;
+  const key = (color === 'white' || color === 'black') ? color : null;
+  if (!key) return base;
+  if (!carVariants[key]) carVariants[key] = buildCarVariant(base, key);
+  return carVariants[key];
+}
+
+// Deep-clone the car GLB and replace its paint/wheel materials with solid colours
+// so the variant reads clearly as white or black. Glass is left intact. Cloned
+// materials are owned by this variant, so per-colour instances never bleed into
+// each other.
+function buildCarVariant(base, key) {
+  const root = base.clone(true);
+  const paint = CAR_PAINT[key] || CAR_PAINT.black;
+  root.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const matName = (o.material.name || '').toLowerCase();
+    if (matName.includes('glass')) {
+      o.material = o.material.clone(); // isolate from other variants/instances
+      return;
+    }
+    // Wheel meshes are the cylinders; keep them dark in both variants.
+    const isWheel = (o.name || '').toLowerCase().startsWith('cylinder');
+    const spec = isWheel ? CAR_WHEEL : paint;
+    o.material = new THREE.MeshStandardMaterial({
+      color: spec.color,
+      metalness: spec.metalness,
+      roughness: spec.roughness,
+    });
+  });
+  return root;
 }
 
 // Wrap a cloned model so its longest horizontal axis spans `targetLen` metres,
