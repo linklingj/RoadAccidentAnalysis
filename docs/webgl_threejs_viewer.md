@@ -47,7 +47,7 @@ Python BEV 분석 결과(scene JSON)를 브라우저에서 3D로 재구성하는
 | `main.js` | 렌더러·씬·조명·그리드·카메라·OrbitControls, scene JSON 로드, `applyScene` 분기, 렌더 루프 |
 | `src/sceneData.js` | JSON 헬퍼: `hasTimeline`, `objectWorld`(smoothed→raw fallback), `signedArea`, `describeScene` |
 | `src/roadBuilder.js` | 도로/횡단보도 polygon → 삼각분할 메시(`THREE.ShapeUtils.triangulateShape`, min-area 필터) |
-| `src/vehicleFactory.js` | 클래스별 절차적 메시(car/truck/bus=박스, person=캡슐, riders), 흰색 통일 색상 |
+| `src/vehicleFactory.js` | car(및 미상 클래스)는 GLB 모델(`assets/coupe.glb`, 첫 사용 전 `preloadVehicleModels()`로 로드 후 clone, 바운딩박스로 실세계 크기·바닥·+Z 전방 정규화), 그 외(truck/bus=박스, person=캡슐, riders)는 절차적 메시 |
 | `src/objectPlacer.js` | 정적 모드: 객체 배치 + 궤적 기반 방향 |
 | `src/trajectoryRenderer.js` | 정적 모드: 트랙별 색상 궤적 라인 |
 | `src/playback.js` | 영상 타임라인 컨트롤러: 트랙 타임라인 구성, 프레임 보간(이진탐색), 최소제곱 추세 heading + 슬루 회전, play/pause/seek/loop/speed |

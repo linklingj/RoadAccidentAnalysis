@@ -5,7 +5,7 @@ import { hasTimeline, describeScene } from './src/sceneData.js';
 import { buildRoad, buildCrosswalk } from './src/roadBuilder.js';
 import { placeObjects } from './src/objectPlacer.js';
 import { buildTrajectories } from './src/trajectoryRenderer.js';
-import { setVehicleStyle, restyleVehicles } from './src/vehicleFactory.js';
+import { setVehicleStyle, restyleVehicles, preloadVehicleModels } from './src/vehicleFactory.js';
 import { PlaybackController } from './src/playback.js';
 import { ViewerUI } from './src/ui.js';
 
@@ -225,8 +225,19 @@ function pickVehicle(e) {
 
   const targets = [...vehicleGroup.children, ...staticGroup.children];
   const hits = raycaster.intersectObjects(targets, true);
-  if (hits.length) enterPOV(hits[0].object);
+  if (hits.length) enterPOV(topLevelVehicle(hits[0].object));
   else exitPOV();
+}
+
+// A pick can land on a GLB car's inner mesh; follow the top-level vehicle object
+// (the direct child of vehicleGroup/staticGroup) so POV tracking and despawn
+// detection work the same for procedural meshes and GLB groups.
+function topLevelVehicle(obj) {
+  let o = obj;
+  while (o && o.parent && o.parent !== vehicleGroup && o.parent !== staticGroup) {
+    o = o.parent;
+  }
+  return o;
 }
 
 function enterPOV(mesh) {
@@ -388,6 +399,9 @@ if (window.ResizeObserver) new ResizeObserver(resizeRenderer).observe(app);
 
 function disposeGroup(group) {
   group.traverse((o) => {
+    // GLB vehicles share geometry/materials with the cached source model; never
+    // dispose those or later clones would reference freed GPU resources.
+    if (isUnderGLB(o)) return;
     if (o.geometry) o.geometry.dispose();
     if (o.material) {
       if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
@@ -396,9 +410,20 @@ function disposeGroup(group) {
   });
 }
 
+function isUnderGLB(o) {
+  for (let p = o; p; p = p.parent) {
+    if (p.userData && p.userData.isGLB) return true;
+  }
+  return false;
+}
+
 // ── Initial load: ?scene=<url> override, else the bundled sample ────────────
+// Preload the GLB car model first so the initial (and later) scenes build with
+// it; if the load fails, vehicles fall back to procedural boxes.
 const params = new URLSearchParams(location.search);
-loadFromUrl(params.get('scene') || 'data/scene_data.json');
+preloadVehicleModels().finally(() => {
+  loadFromUrl(params.get('scene') || 'data/scene_data.json');
+});
 
 // Detect the inference server to enable the "analyze media" control.
 fetch('api/health', { cache: 'no-store' })

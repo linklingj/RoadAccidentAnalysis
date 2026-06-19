@@ -23,7 +23,13 @@
       "PowerShell($node = \\(Get-Command node -ErrorAction SilentlyContinue\\); if \\($node\\) { \"node: $\\($node.Source\\)\" } else { \"no node\" })",
       "Bash(curl -s http://localhost:8765/)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:8765/web/index.html)",
-      "Bash(pkill -f \"http.server 8765\")"
+      "Bash(pkill -f \"http.server 8765\")",
+      "Bash(mkdir -p web/assets)",
+      "Bash(cp \"/Users/jaehyun/Documents/Resources/GameAssets/3d/CarModels/lowpoly_cars_free/GLTF/coupe.glb\" web/assets/coupe.glb)",
+      "Bash(curl -s -o /dev/null -w \"index:%{http_code} \" http://localhost:8123/)",
+      "Bash(curl -s -o /dev/null -w \"glb:%{http_code} \" http://localhost:8123/assets/coupe.glb)",
+      "Bash(curl -s -o /dev/null -w \"scene:%{http_code}\\\\n\" http://localhost:8123/data/scene_data.json)",
+      "Bash(xargs kill)"
     ]
   }
 }
