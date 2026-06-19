@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>교통사고 3D 재구성 뷰어 (WebGL / three.js)</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="dropHint">영상·이미지(서버 추론) 또는 scene JSON을 놓으세요</div>
+
+  <header id="topbar">
+    <h1>교통사고 3D 재구성 <small>WebGL · three.js</small></h1>
+    <div class="controls">
+      <label class="filebtn primary" id="analyzeBtn" title="영상/이미지를 서버에 업로드하여 추론">
+        🎬 영상/이미지 분석
+        <input id="mediaInput" type="file" accept="video/*,image/*" hidden disabled />
+      </label>
+      <label class="num" title="가정 카메라 높이 (m)">높이
+        <input id="camH" type="number" value="2.5" step="0.1" min="0.5" /> m
+      </label>
+      <label class="num" title="BEV 픽셀/미터">ppm
+        <input id="ppm" type="number" value="28" step="1" min="1" />
+      </label>
+      <span class="sep"></span>
+      <button id="sampleBtn" title="번들된 샘플 씬 로드">샘플</button>
+      <label class="filebtn" title="기존 scene JSON 불러오기">
+        JSON 열기
+        <input id="fileInput" type="file" accept="application/json,.json" hidden />
+      </label>
+      <span class="hint">또는 <code>*_scene.json</code> 드래그&드롭</span>
+    </div>
+  </header>
+
+  <aside id="panel">
+    <div id="info"></div>
+    <div class="views">
+      <button data-view="reset" title="기본 시점">⟳ 기본</button>
+      <button data-view="top" title="탑다운(BEV)">▣ 탑다운</button>
+      <button data-view="analysis" title="분석 카메라 시점">◉ 카메라</button>
+    </div>
+  </aside>
+
+  <div id="playbackBar" class="disabled">
+    <button id="playBtn" disabled>▶ Play</button>
+    <input id="seek" type="range" min="0" max="1000" value="0" step="1" disabled />
+    <span id="timeLabel">--:-- / --:--</span>
+    <label class="speed">속도
+      <select id="speed">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="status"></div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

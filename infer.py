@@ -47,9 +47,9 @@ class PipelineConfig:
     video_recompute_camera_each_frame: bool = False
     use_clahe: bool = True
     device: Optional[Any] = None
-    # Unity 연동: scene JSON을 StreamingAssets로 미러링하여 Unity SceneLoader가 바로 로드
-    unity_streaming_assets_dir: Optional[str] = "Road3dReconstruction/Assets/StreamingAssets"
-    unity_scene_filename: str = "scene_data.json"
+    # 웹 뷰어 연동: scene JSON을 web/data로 미러링하여 three.js 뷰어가 바로 로드
+    web_data_dir: Optional[str] = "web/data"
+    web_scene_filename: str = "scene_data.json"
 
 
 def _resolve_device(device: Optional[Any]) -> Any:
@@ -997,12 +997,12 @@ def export_scene_json(
     tracks_registry: Optional[Dict[int, str]] = None,
     fps: float = 0.0,
 ) -> Dict[str, Any]:
-    """Build a Unity-friendly scene description in real-world (meter) coordinates.
+    """Build a web/three.js-friendly scene description in real-world (meter) coordinates.
 
-    Schema is shaped for `JsonUtility.FromJson<T>` consumption (no dictionaries).
-    All polygons are projected from UV to ground plane using the same homography
-    used for BEV rendering. Trajectory points stored in BEV pixel space are
-    inverse-projected back to world meters.
+    Emitted as plain JSON consumed by the three.js viewer (web/). All polygons are
+    projected from UV to ground plane using the same homography used for BEV
+    rendering. Trajectory points stored in BEV pixel space are inverse-projected
+    back to world meters.
     """
     cfg = cfg or PipelineConfig()
     cam_h = float(cfg.camera_height_m)
@@ -1116,7 +1116,7 @@ def write_scene_json(
     primary_path: Path,
     cfg: Optional[PipelineConfig] = None,
 ) -> List[Path]:
-    """Write the scene JSON to ``primary_path`` and mirror to Unity StreamingAssets."""
+    """Write the scene JSON to ``primary_path`` and mirror to web/data for the viewer."""
     written: List[Path] = []
     primary_path.parent.mkdir(parents=True, exist_ok=True)
     with primary_path.open("w", encoding="utf-8") as f:
@@ -1124,21 +1124,21 @@ def write_scene_json(
     written.append(primary_path)
 
     cfg = cfg or PipelineConfig()
-    if cfg.unity_streaming_assets_dir:
+    if cfg.web_data_dir:
         # Resolve relative path against this file's repo root so it works
         # regardless of the caller's CWD.
         repo_root = Path(__file__).resolve().parent
-        unity_dir = Path(cfg.unity_streaming_assets_dir)
-        if not unity_dir.is_absolute():
-            unity_dir = repo_root / unity_dir
+        web_dir = Path(cfg.web_data_dir)
+        if not web_dir.is_absolute():
+            web_dir = repo_root / web_dir
         try:
-            unity_dir.mkdir(parents=True, exist_ok=True)
-            unity_path = unity_dir / cfg.unity_scene_filename
-            with unity_path.open("w", encoding="utf-8") as f:
+            web_dir.mkdir(parents=True, exist_ok=True)
+            web_path = web_dir / cfg.web_scene_filename
+            with web_path.open("w", encoding="utf-8") as f:
                 json.dump(scene, f, ensure_ascii=False)
-            written.append(unity_path)
+            written.append(web_path)
         except OSError:
-            # Unity 프로젝트가 없을 수도 있으므로 mirror 실패는 치명적이지 않음
+            # web/ 디렉토리가 없을 수도 있으므로 mirror 실패는 치명적이지 않음
             pass
     return written
 

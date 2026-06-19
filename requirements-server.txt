@@ -1,0 +1,8 @@
+# Web server for the three.js viewer + inference API (server.py).
+# Run inside the `dl` conda env, which already provides the heavy ML deps
+# (opencv-python, torch, ultralytics, perspective2d). Only Flask is extra:
+#
+#   conda activate dl
+#   pip install -r requirements-server.txt
+#   python server.py
+flask>=3.0
