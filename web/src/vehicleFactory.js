@@ -15,8 +15,31 @@ const CLASS_SHAPES = {
 };
 const FALLBACK_SHAPE = { kind: 'box', size: [1.8, 1.6, 2.25] };
 
-// All objects share one colour for a clean, uniform look.
-const OBJECT_COLOR = 0xffffff;
+// Mutable vehicle style, tweakable from the dev panel (F1). `color` is shared by
+// all objects; `scale` multiplies the per-class geometry uniformly; `lengthScale`
+// additionally stretches the forward (+Z) axis.
+// Defaults: size 0.6 (compact footprint), length 1.4 (stretched forward axis).
+const STYLE = { color: '#ffffff', scale: 0.6, lengthScale: 1.4 };
+
+export function setVehicleStyle(partial) {
+  if (partial.color != null) STYLE.color = partial.color;
+  if (partial.scale != null) STYLE.scale = partial.scale;
+  if (partial.lengthScale != null) STYLE.lengthScale = partial.lengthScale;
+}
+
+// Apply the current colour + scale to one vehicle mesh.
+export function styleVehicle(mesh) {
+  if (!mesh || !mesh.isMesh) return;
+  if (mesh.material && mesh.material.color) mesh.material.color.set(STYLE.color);
+  mesh.scale.set(STYLE.scale, STYLE.scale, STYLE.scale * STYLE.lengthScale);
+}
+
+// Re-apply the style to every vehicle mesh under the given groups (live update).
+export function restyleVehicles(...groups) {
+  for (const g of groups) {
+    if (g) g.traverse((o) => { if (o.isMesh) styleVehicle(o); });
+  }
+}
 
 function shapeFor(className) {
   if (!className) return FALLBACK_SHAPE;
@@ -32,14 +55,10 @@ export function trackColor(trackId) {
   return new THREE.Color().setRGB(...hsvToRgb(hue / 360, 0.7, 1.0));
 }
 
-/** Unified object colour (white). */
-export function objectColor() {
-  return new THREE.Color(OBJECT_COLOR);
-}
-
 /**
  * Build a mesh for the given class. Geometry is translated up by half its height
- * so the mesh origin is the ground-contact point.
+ * so the mesh origin is the ground-contact point. The current dev style (colour
+ * + scale) is applied so newly spawned vehicles match live tweaks.
  */
 export function createVehicle(className, trackId) {
   const shape = shapeFor(className);
@@ -57,12 +76,13 @@ export function createVehicle(className, trackId) {
   geometry.translate(0, height / 2, 0);
 
   const material = new THREE.MeshStandardMaterial({
-    color: objectColor(),
+    color: STYLE.color,
     metalness: 0.1,
     roughness: 0.65,
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.castShadow = true;
+  styleVehicle(mesh);
   return mesh;
 }
 

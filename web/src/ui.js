@@ -4,7 +4,7 @@
 
 export class ViewerUI {
   constructor(handlers) {
-    this.h = handlers; // { onFile, onLoadSample, onMedia, onView, onTogglePlay, onSeek, onSpeedChange }
+    this.h = handlers; // { onFile, onLoadSample, onMedia, onView, onTogglePlay, onSeek, onSpeedChange, onVehicleStyle }
     this._draggingSlider = false;
     this.serverAvailable = false;
 
@@ -21,6 +21,19 @@ export class ViewerUI {
     this.camH = this.$('camH');
     this.ppm = this.$('ppm');
     this.playbackBar = this.$('playbackBar');
+    this.devPanel = this.$('devPanel');
+    this.devColor = this.$('devColor');
+    this.devScale = this.$('devScale');
+    this.devLength = this.$('devLength');
+    this.devScaleVal = this.$('devScaleVal');
+    this.devLengthVal = this.$('devLengthVal');
+
+    // Left-pane original media (synced to the 3D timeline).
+    this.mediaVideo = this.$('mediaVideo');
+    this.mediaImage = this.$('mediaImage');
+    this.mediaEmpty = this.$('mediaEmpty');
+    this._mediaURL = null;   // active object URL (revoked when replaced)
+    this._mediaType = null;  // 'video' | 'image' | null
 
     this._wire();
   }
@@ -61,6 +74,21 @@ export class ViewerUI {
       btn.addEventListener('click', () => this.h.onView(btn.dataset.view));
     }
 
+    // F1 toggles the developer panel (live vehicle size / colour tweaks).
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'F1') { e.preventDefault(); this.toggleDev(); }
+    });
+    const emitStyle = () => this._emitVehicleStyle();
+    this.devColor.addEventListener('input', emitStyle);
+    this.devScale.addEventListener('input', emitStyle);
+    this.devLength.addEventListener('input', emitStyle);
+    this.$('devReset').addEventListener('click', () => {
+      this.devColor.value = '#ffffff';
+      this.devScale.value = '1';
+      this.devLength.value = '1';
+      this._emitVehicleStyle();
+    });
+
     // Drag & drop a *_scene.json anywhere onto the page.
     const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
     ['dragenter', 'dragover'].forEach((ev) => window.addEventListener(ev, (e) => {
@@ -100,6 +128,18 @@ export class ViewerUI {
     }
   }
 
+  toggleDev() {
+    this.devPanel.classList.toggle('hidden');
+  }
+
+  _emitVehicleStyle() {
+    const scale = Number(this.devScale.value) || 1;
+    const lengthScale = Number(this.devLength.value) || 1;
+    this.devScaleVal.textContent = `${scale.toFixed(2)}×`;
+    this.devLengthVal.textContent = `${lengthScale.toFixed(2)}×`;
+    this.h.onVehicleStyle({ color: this.devColor.value, scale, lengthScale });
+  }
+
   setStatus(msg, isError = false, busy = false) {
     this.statusEl.innerHTML = msg
       ? (busy ? `<span class="spinner"></span> ${escapeHtml(msg)}` : escapeHtml(msg))
@@ -118,6 +158,55 @@ export class ViewerUI {
         : '서버 모드 전용 — `python server.py` 실행 필요';
     }
     if (this.mediaInput) this.mediaInput.disabled = !ok;
+  }
+
+  // Show the original media in the left pane. `source` = { url, type } or null.
+  // Takes ownership of object URLs, revoking the previous one on replace.
+  setMedia(source) {
+    if (this._mediaURL && this._mediaURL.startsWith('blob:') && this._mediaURL !== (source && source.url)) {
+      URL.revokeObjectURL(this._mediaURL);
+    }
+    this._mediaURL = source ? source.url : null;
+    this._mediaType = source ? source.type : null;
+
+    // Stop/clear the video either way so a previous clip never keeps playing.
+    this.mediaVideo.pause();
+    this.mediaVideo.removeAttribute('src');
+    this.mediaVideo.load();
+    this.mediaVideo.style.display = 'none';
+    this.mediaImage.removeAttribute('src');
+    this.mediaImage.style.display = 'none';
+    this.mediaEmpty.style.display = 'none';
+
+    if (!source) {
+      this.mediaEmpty.style.display = 'block';
+    } else if (source.type === 'video') {
+      this.mediaVideo.src = source.url;
+      this.mediaVideo.muted = true;
+      this.mediaVideo.style.display = 'block';
+      this.mediaVideo.load();
+    } else {
+      this.mediaImage.src = source.url;
+      this.mediaImage.style.display = 'block';
+    }
+  }
+
+  // Keep the left-pane video aligned with the 3D timeline: match play state and
+  // speed, and nudge currentTime only when it drifts (avoids constant seeking).
+  _syncVideo(p) {
+    const v = this.mediaVideo;
+    if (this._mediaType !== 'video' || !v.src || !p.hasTimeline) return;
+
+    if (Number.isFinite(p.speed) && p.speed > 0 && v.playbackRate !== p.speed) {
+      try { v.playbackRate = p.speed; } catch (_) { /* unsupported rate */ }
+    }
+    if (p.isPlaying && v.paused) v.play().catch(() => {});
+    if (!p.isPlaying && !v.paused) v.pause();
+
+    if (v.readyState >= 1 && Number.isFinite(v.duration) && v.duration > 0) {
+      const target = Math.max(0, Math.min(p.currentTime, v.duration - 0.05));
+      if (Math.abs(v.currentTime - target) > 0.2) v.currentTime = target;
+    }
   }
 
   setInfo(summary) {
@@ -148,6 +237,7 @@ export class ViewerUI {
     this.timeLabel.textContent = p.hasTimeline
       ? `${fmt(p.currentTime)} / ${fmt(p.duration)}`
       : '--:-- / --:--';
+    this._syncVideo(p);
   }
 }
 

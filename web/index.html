@@ -15,7 +15,17 @@
   </script>
 </head>
 <body>
-  <div id="app"></div>
+  <div id="stage">
+    <div id="videoPane">
+      <video id="mediaVideo" playsinline muted></video>
+      <img id="mediaImage" alt="원본 이미지" />
+      <div id="mediaEmpty">
+        원본 영상이 여기에 표시됩니다
+        <small>영상/이미지를 분석하면 좌측에 원본이, 우측에 3D 재구성이 동기 재생됩니다.</small>
+      </div>
+    </div>
+    <div id="app"></div>
+  </div>
 
   <div id="dropHint">영상·이미지(서버 추론) 또는 scene JSON을 놓으세요</div>
 
@@ -64,6 +74,22 @@
         <option value="4">4×</option>
       </select>
     </label>
+  </div>
+
+  <div id="devPanel" class="hidden">
+    <div class="dev-head">개발자 모드 <span>F1 토글</span></div>
+    <label class="dev-row">색상
+      <input id="devColor" type="color" value="#ffffff" />
+    </label>
+    <label class="dev-row">크기
+      <input id="devScale" type="range" min="0.2" max="3" step="0.05" value="0.6" />
+      <b id="devScaleVal">0.60×</b>
+    </label>
+    <label class="dev-row">길이
+      <input id="devLength" type="range" min="0.2" max="3" step="0.05" value="1.4" />
+      <b id="devLengthVal">1.40×</b>
+    </label>
+    <button id="devReset">기본값으로</button>
   </div>
 
   <div id="status"></div>

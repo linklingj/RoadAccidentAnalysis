@@ -17,7 +17,13 @@
       "Bash(xargs grep -l \"conf\\\\|threshold\\\\|NMS\\\\|augment\")",
       "PowerShell(Get-ChildItem *)",
       "PowerShell(head *)",
-      "PowerShell(Get-Content *)"
+      "PowerShell(Get-Content *)",
+      "Bash(/c/ProgramData/anaconda3/python.exe -m http.server 8000 --bind 127.0.0.1)",
+      "PowerShell($c = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue; if \\($c\\) { $c | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; \"stopped PID $_\" } catch {} } } else { \"no listener on 8000\" })",
+      "PowerShell($node = \\(Get-Command node -ErrorAction SilentlyContinue\\); if \\($node\\) { \"node: $\\($node.Source\\)\" } else { \"no node\" })",
+      "Bash(curl -s http://localhost:8765/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:8765/web/index.html)",
+      "Bash(pkill -f \"http.server 8765\")"
     ]
   }
 }
