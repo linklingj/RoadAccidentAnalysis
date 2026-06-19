@@ -29,7 +29,18 @@
       "Bash(curl -s -o /dev/null -w \"index:%{http_code} \" http://localhost:8123/)",
       "Bash(curl -s -o /dev/null -w \"glb:%{http_code} \" http://localhost:8123/assets/coupe.glb)",
       "Bash(curl -s -o /dev/null -w \"scene:%{http_code}\\\\n\" http://localhost:8123/data/scene_data.json)",
-      "Bash(xargs kill)"
+      "Bash(xargs kill)",
+      "PowerShell(cmd /c \"aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin 351998451865.dkr.ecr.ap-northeast-2.amazonaws.com\")",
+      "PowerShell($AWS_REGION = \"ap-northeast-2\")",
+      "PowerShell(aws iam get-role *)",
+      "PowerShell(aws iam attach-role-policy *)",
+      "Bash(git remote *)",
+      "Skill(run)",
+      "Bash(curl -s http://localhost:8765/styles.css)",
+      "Bash(curl -s http://localhost:8765/main.js)",
+      "Bash(chromium-cli *)",
+      "Bash(pkill -f \"python -m http.server 8765\")",
+      "Skill(claude-in-chrome)"
     ]
   }
 }

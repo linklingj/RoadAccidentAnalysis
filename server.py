@@ -36,6 +36,30 @@ OUTPUT_DIR = REPO_ROOT / "output"
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
+# Pre-computed scene JSONs served instantly for the landing-page sample cards.
+# Add more entries here when additional pre-inferred JSONs become available.
+SAMPLE_META = [
+    {
+        "id": "sample1",
+        "name": "교차로 씬",
+        "desc": "차량 3대 추적 · BEV 투영 · 3D 재구성",
+        "file": WEB_DIR / "data" / "scene_data.json",
+    },
+    {
+        "id": "sample2",
+        "name": "도로 씬",
+        "desc": "차선 검출 · 횡단보도 인식 · 궤적 분석",
+        "file": WEB_DIR / "data" / "scene_data.json",
+    },
+    {
+        "id": "sample3",
+        "name": "타임라인 씬",
+        "desc": "영상 동기 재생 · 프레임별 위치 추적",
+        "file": WEB_DIR / "data" / "scene_data.json",
+    },
+]
+_SAMPLE_BY_ID = {s["id"]: s for s in SAMPLE_META}
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024  # 512 MB upload cap
 
@@ -193,6 +217,24 @@ def api_job(job_id: str):
 @app.get("/api/health")
 def api_health():
     return jsonify(ok=True, projector_loaded=_projector is not None)
+
+
+@app.get("/api/samples")
+def api_samples():
+    return jsonify([{"id": s["id"], "name": s["name"], "desc": s["desc"]} for s in SAMPLE_META])
+
+
+@app.get("/api/samples/<sample_id>")
+def api_sample(sample_id: str):
+    sample = _SAMPLE_BY_ID.get(sample_id)
+    if sample is None:
+        return jsonify(error="알 수 없는 샘플 ID"), 404
+    json_path: Path = sample["file"]
+    if not json_path.exists():
+        return jsonify(error=f"샘플 파일 없음: {json_path.name}"), 404
+    import json as _json
+    with open(json_path, encoding="utf-8") as f:
+        return jsonify(_json.load(f))
 
 
 # ── Static frontend (web/) ──────────────────────────────────────────────────

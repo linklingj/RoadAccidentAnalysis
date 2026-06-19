@@ -26,7 +26,8 @@ RUN pip install --no-cache-dir -e ./PerspectiveFields/
 RUN pip install --no-cache-dir \
         ultralytics \
         flask>=3.0 \
-        gunicorn
+        gunicorn \
+        imageio
 
 # ── Pre-cache PerspectiveFields weights ──────────────────────────────────────
 # Run a tiny import so torch.hub downloads the backbone weights at build time

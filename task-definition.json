@@ -1,0 +1,32 @@
+{
+  "family": "roadaccident",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "8192",
+  "executionRoleArn": "arn:aws:iam::351998451865:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "roadaccident",
+      "image": "351998451865.dkr.ecr.ap-northeast-2.amazonaws.com/roadaccident:latest",
+      "portMappings": [
+        {
+          "containerPort": 5000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "PYTHONUNBUFFERED", "value": "1"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/roadaccident",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "essential": true
+    }
+  ]
+}

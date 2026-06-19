@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-import { hasTimeline, describeScene } from './src/sceneData.js';
+import { hasTimeline, describeScene, objectWorld } from './src/sceneData.js';
 import { buildRoad, buildCrosswalk } from './src/roadBuilder.js';
 import { placeObjects } from './src/objectPlacer.js';
 import { buildTrajectories } from './src/trajectoryRenderer.js';
@@ -74,12 +74,25 @@ const playback = new PlaybackController(vehicleGroup);
 
 let currentScene = null;
 let sceneBounds = new THREE.Box3(new THREE.Vector3(-10, 0, -10), new THREE.Vector3(10, 0, 10));
+// Centroid of vehicle/trajectory positions — may differ from the geometric
+// centre of road bounds when vehicles occupy only part of the visible road.
+let contentCenter = new THREE.Vector3();
+
+// ── Page navigation ────────────────────────────────────────────────────────
+let serverAvailable = false;
+
+function showSimulator() {
+  document.body.classList.remove('on-landing');
+}
+
+function showLanding() {
+  document.body.classList.add('on-landing');
+}
 
 // ── UI ─────────────────────────────────────────────────────────────────────
 const ui = new ViewerUI({
-  onFile: (file) => loadFromFile(file),
-  onLoadSample: () => loadFromUrl('data/scene_data.json'),
-  onMedia: (file, params) => inferMedia(file, params),
+  onFile: (file) => { showSimulator(); loadFromFile(file); },
+  onMedia: (file, params) => { showSimulator(); inferMedia(file, params); },
   onView: (preset) => applyView(preset),
   onTogglePlay: () => playback.toggle(),
   onSeek: (t01) => playback.seekNormalized(t01),
@@ -127,7 +140,45 @@ function computeBounds() {
   box.expandByObject(crosswalkGroup);
   box.expandByObject(staticGroup);
   box.expandByObject(vehicleGroup);
+
+  // In video mode vehicleGroup only holds frame-0 positions (often empty).
+  // Iterate every frame and every trajectory so bounds capture the full
+  // spatial extent of vehicle movement throughout the clip.
+  // contentRoot.scale.x = -1 mirrors scene X → world X = -scene X.
+  const contentBox = new THREE.Box3();
+  if (currentScene) {
+    const expandContent = (xScene, zScene) => {
+      const pt = new THREE.Vector3(-xScene, 0, zScene);
+      box.expandByPoint(pt);
+      contentBox.expandByPoint(pt);
+    };
+    for (const frame of (currentScene.frames || [])) {
+      for (const obj of (frame.objects || [])) {
+        const w = objectWorld(obj);
+        expandContent(w.x, w.z);
+      }
+    }
+    for (const traj of (currentScene.trajectories || [])) {
+      for (const pt of (traj.points || [])) {
+        expandContent(pt.x, pt.z);
+      }
+    }
+    for (const obj of (currentScene.objects || [])) {
+      const w = objectWorld(obj);
+      expandContent(w.x, w.z);
+    }
+  }
+
   if (box.isEmpty()) box.set(new THREE.Vector3(-10, 0, -10), new THREE.Vector3(10, 0, 10));
+
+  // contentCenter = where the action is; fall back to full-bounds centre
+  // when there are no tracked objects (road-only scene).
+  if (!contentBox.isEmpty()) {
+    contentBox.getCenter(contentCenter).setY(0);
+  } else {
+    box.getCenter(contentCenter).setY(0);
+  }
+
   return box;
 }
 
@@ -140,7 +191,6 @@ function applyView(preset) {
     return;
   }
 
-  const center = sceneBounds.getCenter(new THREE.Vector3());
   const size = sceneBounds.getSize(new THREE.Vector3());
   const radius = Math.max(8, 0.5 * Math.hypot(size.x, size.z));
 
@@ -150,14 +200,50 @@ function applyView(preset) {
     camera.updateProjectionMatrix();
   }
 
+  // tan(vFOV/2) — the minimum camera–target distance to keep the full scene
+  // inside the vertical frustum is radius / fovHalfTan.
+  const fovHalfTan = Math.tan(THREE.MathUtils.degToRad(DEFAULT_FOV / 2));
+
   if (preset === 'top') {
-    camera.position.set(center.x, center.y + radius * 2.2, center.z + 0.001);
+    // Height required to see every scene corner when looking down at
+    // contentCenter (which may be offset from the geometric bounds centre).
+    let maxCornerDist = 0;
+    const cx = contentCenter.x, cz = contentCenter.z;
+    for (const bx of [sceneBounds.min.x, sceneBounds.max.x]) {
+      for (const bz of [sceneBounds.min.z, sceneBounds.max.z]) {
+        const d = Math.hypot(bx - cx, bz - cz);
+        if (d > maxCornerDist) maxCornerDist = d;
+      }
+    }
+    const topH = Math.max(radius * 2.0, maxCornerDist / fovHalfTan) * 1.2;
+
+    // Use a Z offset = topH * 0.01 to firmly pin the azimuth so the near end
+    // of the road appears at the top of the screen, consistently regardless of
+    // the previous orbit angle. Disable damping for two update() calls: the
+    // first drains any accumulated spherical delta and zeroes it; the second
+    // snaps the camera exactly into place with zero delta.
+    const wasDamping = controls.enableDamping;
+    controls.enableDamping = false;
+    controls.target.copy(contentCenter);
+    camera.position.set(contentCenter.x, contentCenter.y + topH, contentCenter.z + topH * 0.01);
+    controls.update(); // applies + zeroes residual delta
+    camera.position.set(contentCenter.x, contentCenter.y + topH, contentCenter.z + topH * 0.01);
+    controls.update(); // zero delta → camera lands exactly here
+    controls.enableDamping = wasDamping;
+
   } else {
-    // reset / 3-4 orbit view
-    camera.position.set(center.x + radius * 0.9, center.y + radius * 1.1, center.z - radius * 0.9);
+    // reset: orbit view centred on contentCenter (where vehicles actually are),
+    // at a distance that guarantees the full scene fits in the frustum.
+    // Direction (~30° elevation, ~20° azimuth) — magnitude ≈ 1.
+    const dist = (radius / fovHalfTan) * 1.3;
+    camera.position.set(
+      contentCenter.x + dist * 0.30,
+      contentCenter.y + dist * 0.50,
+      contentCenter.z - dist * 0.81,
+    );
+    controls.target.copy(contentCenter);
+    controls.update();
   }
-  controls.target.copy(center);
-  controls.update();
 }
 
 // Reproduce the CCTV vantage point. The pipeline projects everything relative to
@@ -417,16 +503,86 @@ function isUnderGLB(o) {
   return false;
 }
 
-// ── Initial load: ?scene=<url> override, else the bundled sample ────────────
-// Preload the GLB car model first so the initial (and later) scenes build with
-// it; if the load fails, vehicles fall back to procedural boxes.
-const params = new URLSearchParams(location.search);
-preloadVehicleModels().finally(() => {
-  loadFromUrl(params.get('scene') || 'data/scene_data.json');
+// ── Landing page wiring ─────────────────────────────────────────────────────
+document.getElementById('homeBtn').addEventListener('click', showLanding);
+
+// Sample cards
+document.querySelectorAll('.sample-card').forEach((card) => {
+  card.addEventListener('click', async () => {
+    const sampleId = card.dataset.sample;
+    showSimulator();
+    await loadSample(sampleId);
+  });
 });
 
-// Detect the inference server to enable the "analyze media" control.
+// Landing upload button
+const landingMediaInput = document.getElementById('landingMediaInput');
+const landingAnalyzeBtn = document.getElementById('landingAnalyzeBtn');
+landingMediaInput.addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  landingMediaInput.value = '';
+  if (!serverAvailable) {
+    ui.setStatus('서버 모드 전용입니다 — `python server.py` 실행 후 사용하세요.', true);
+    showSimulator();
+    return;
+  }
+  showSimulator();
+  inferMedia(file, {
+    cameraHeight: Number(document.getElementById('landingCamH').value) || undefined,
+    ppm: Number(document.getElementById('landingPpm').value) || undefined,
+  });
+});
+
+async function loadSample(sampleId) {
+  ui.setStatus(`샘플 로드 중…`, false, true);
+  try {
+    // Try server API first (fastest); fall back to static file.
+    if (serverAvailable) {
+      const res = await fetch(`api/samples/${sampleId}`, { cache: 'no-store' });
+      if (res.ok) {
+        applyScene(await res.json());
+        return;
+      }
+    }
+    await loadFromUrl('data/scene_data.json');
+  } catch (err) {
+    ui.setStatus(`샘플 로드 실패: ${err.message}`, true);
+  }
+}
+
+// ── Initial load ────────────────────────────────────────────────────────────
+// Preload GLB car model in the background; ?scene= query override skips landing.
+const urlParams = new URLSearchParams(location.search);
+const sceneOverride = urlParams.get('scene');
+preloadVehicleModels().finally(() => {
+  if (sceneOverride) {
+    showSimulator();
+    loadFromUrl(sceneOverride);
+  }
+  // else: stay on landing page, three.js renders the empty grid behind it
+});
+
+// Detect inference server: enable analyze button and sample API.
+const serverStatusEl = document.getElementById('serverStatus');
 fetch('api/health', { cache: 'no-store' })
   .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no server'))))
-  .then(() => ui.setServerAvailable(true))
-  .catch(() => ui.setServerAvailable(false));
+  .then(() => {
+    serverAvailable = true;
+    ui.setServerAvailable(true);
+    landingAnalyzeBtn.classList.remove('disabled');
+    landingMediaInput.disabled = false;
+    if (serverStatusEl) {
+      serverStatusEl.textContent = '● 서버 연결됨';
+      serverStatusEl.className = 'server-status ok';
+    }
+  })
+  .catch(() => {
+    serverAvailable = false;
+    ui.setServerAvailable(false);
+    landingAnalyzeBtn.classList.add('disabled');
+    if (serverStatusEl) {
+      serverStatusEl.textContent = '● 서버 없음 — 샘플만 이용 가능';
+      serverStatusEl.className = 'server-status err';
+    }
+  });

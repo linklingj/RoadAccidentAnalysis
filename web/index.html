@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>교통사고 3D 재구성 뷰어 (WebGL / three.js)</title>
+  <title>교통사고 3D 재구성</title>
   <link rel="stylesheet" href="styles.css" />
   <script type="importmap">
   {
@@ -14,7 +14,100 @@
   }
   </script>
 </head>
-<body>
+<body class="on-landing">
+
+  <!-- ── Landing page ─────────────────────────────────────────────────────── -->
+  <div id="landing">
+    <div class="landing-inner">
+
+      <div class="landing-hero">
+        <div class="landing-badge">CCTV · Deep Learning · WebGL</div>
+        <h1 class="landing-title">교통사고 3D 재구성</h1>
+        <p class="landing-subtitle">CCTV 영상에서 차량을 추적하고 사고 현장을 3차원으로 시각화합니다</p>
+
+        <div class="landing-upload">
+          <label class="landing-upload-btn" id="landingAnalyzeBtn">
+            🎬 영상 / 이미지 분석
+            <input id="landingMediaInput" type="file" accept="video/*,image/*" hidden disabled />
+          </label>
+          <div class="landing-params">
+            <label class="num">카메라 높이
+              <input id="landingCamH" type="number" value="2.5" step="0.1" min="0.5" /> m
+            </label>
+            <label class="num">ppm
+              <input id="landingPpm" type="number" value="28" step="1" min="1" />
+            </label>
+          </div>
+          <p class="server-status" id="serverStatus">서버 연결 확인 중…</p>
+        </div>
+      </div>
+
+      <div class="samples-section">
+        <h2 class="samples-heading">샘플 씬</h2>
+        <div class="sample-cards">
+
+          <button class="sample-card" data-sample="sample1">
+            <div class="sample-thumb thumb-1">
+              <span class="thumb-rec">● REC</span>
+              <div class="thumb-play-btn">▶</div>
+              <span class="thumb-ts">2024-01-15 09:23:41</span>
+            </div>
+            <div class="sample-info">
+              <div class="sample-name">교차로 씬</div>
+              <div class="sample-desc">차량 3대 추적 · BEV 투영 · 3D 재구성</div>
+            </div>
+          </button>
+
+          <button class="sample-card" data-sample="sample2">
+            <div class="sample-thumb thumb-2">
+              <span class="thumb-rec">● REC</span>
+              <div class="thumb-play-btn">▶</div>
+              <span class="thumb-ts">2024-03-08 14:51:07</span>
+            </div>
+            <div class="sample-info">
+              <div class="sample-name">도로 씬</div>
+              <div class="sample-desc">차선 검출 · 횡단보도 인식 · 궤적 분석</div>
+            </div>
+          </button>
+
+          <button class="sample-card" data-sample="sample3">
+            <div class="sample-thumb thumb-3">
+              <span class="thumb-rec">● REC</span>
+              <div class="thumb-play-btn">▶</div>
+              <span class="thumb-ts">2024-06-02 18:09:33</span>
+            </div>
+            <div class="sample-info">
+              <div class="sample-name">타임라인 씬</div>
+              <div class="sample-desc">영상 동기 재생 · 프레임별 위치 추적</div>
+            </div>
+          </button>
+
+        </div>
+      </div>
+
+      <div class="landing-footer">
+        <p class="project-desc">
+          CCTV 영상에서 YOLOv8 기반 차량·보행자 검출, PerspectiveFields 카메라 추정,
+          Homography BEV 투영을 결합해 사고 현장을 3차원 공간으로 재구성합니다.
+          차량 간 거리, 충돌 지점, 차선 이탈 등을 WebGL로 시각화하여
+          사고 원인 분석 및 시나리오 시뮬레이션에 활용합니다.
+        </p>
+        <div class="footer-links">
+          <a class="github-link" href="https://github.com/linklingj/RoadAccidentAnalysis" target="_blank" rel="noopener">
+            <svg class="gh-icon" viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+            </svg>
+            GitHub
+          </a>
+          <span class="footer-sep">·</span>
+          <span class="footer-credit">22011807 최재현 · 딥러닝 실습 프로젝트</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── Simulator ─────────────────────────────────────────────────────────── -->
   <div id="stage">
     <div id="videoPane">
       <video id="mediaVideo" playsinline muted></video>
@@ -30,6 +123,7 @@
   <div id="dropHint">영상·이미지(서버 추론) 또는 scene JSON을 놓으세요</div>
 
   <header id="topbar">
+    <button id="homeBtn" title="홈 화면으로 돌아가기">← 홈</button>
     <h1>교통사고 3D 재구성 <small>WebGL · three.js</small></h1>
     <div class="controls">
       <label class="filebtn primary" id="analyzeBtn" title="영상/이미지를 서버에 업로드하여 추론">
@@ -42,13 +136,6 @@
       <label class="num" title="BEV 픽셀/미터">ppm
         <input id="ppm" type="number" value="28" step="1" min="1" />
       </label>
-      <span class="sep"></span>
-      <button id="sampleBtn" title="번들된 샘플 씬 로드">샘플</button>
-      <label class="filebtn" title="기존 scene JSON 불러오기">
-        JSON 열기
-        <input id="fileInput" type="file" accept="application/json,.json" hidden />
-      </label>
-      <span class="hint">또는 <code>*_scene.json</code> 드래그&드롭</span>
     </div>
   </header>
 

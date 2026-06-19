@@ -4,7 +4,7 @@
 
 export class ViewerUI {
   constructor(handlers) {
-    this.h = handlers; // { onFile, onLoadSample, onMedia, onView, onTogglePlay, onSeek, onSpeedChange, onVehicleStyle }
+    this.h = handlers; // { onFile, onMedia, onView, onTogglePlay, onSeek, onSpeedChange, onVehicleStyle }
     this._draggingSlider = false;
     this.serverAvailable = false;
 
@@ -15,7 +15,6 @@ export class ViewerUI {
     this.slider = this.$('seek');
     this.timeLabel = this.$('timeLabel');
     this.speedSel = this.$('speed');
-    this.fileInput = this.$('fileInput');
     this.mediaInput = this.$('mediaInput');
     this.analyzeBtn = this.$('analyzeBtn');
     this.camH = this.$('camH');
@@ -39,11 +38,6 @@ export class ViewerUI {
   }
 
   _wire() {
-    this.fileInput.addEventListener('change', (e) => {
-      const file = e.target.files && e.target.files[0];
-      if (file) this.h.onFile(file);
-      this.fileInput.value = '';
-    });
     this.mediaInput.addEventListener('change', (e) => {
       const file = e.target.files && e.target.files[0];
       if (file) {
@@ -58,7 +52,6 @@ export class ViewerUI {
       }
       this.mediaInput.value = '';
     });
-    this.$('sampleBtn').addEventListener('click', () => this.h.onLoadSample());
 
     this.playBtn.addEventListener('click', () => this.h.onTogglePlay());
     this.slider.addEventListener('pointerdown', () => { this._draggingSlider = true; });
