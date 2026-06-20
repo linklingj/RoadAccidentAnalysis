@@ -52,6 +52,7 @@ pip-wheel-metadata/
 logs/
 
 # ML training / inference artifacts
+datasets-rfdetr/
 runs/
 wandb/
 mlruns/
@@ -88,3 +89,4 @@ cctv-object-dataset-coco/
 cctv-object-dataset-aihub/
 PerspectiveFields/
 rf-detr-large-2026.pth
+rf-detr-nano.pth

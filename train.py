@@ -1,5 +1,8 @@
+import os
+# RF-DETR(torch) + conda 환경에서 libiomp5md.dll 중복 로드(OMP Error #15) 회피
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import torch
-from ultralytics import YOLO
 import argparse
 
 parser = argparse.ArgumentParser()
@@ -10,9 +13,16 @@ parser.add_argument('--batch', type=int, default=4, help='Batch size per step (r
 parser.add_argument('--grad-accum', type=int, default=4, help='Gradient accumulation steps (rfdetr-object only)')
 parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (rfdetr-object only)')
 parser.add_argument('--output-dir', type=str, default='runs/detect/rfdetr-object', help='Checkpoint output dir (rfdetr-object only)')
+parser.add_argument('--rfdetr-size', type=str, default='nano',
+                    choices=['nano', 'small', 'medium', 'base', 'large'],
+                    help='RF-DETR 모델 크기 (rfdetr-object only)')
+parser.add_argument('--resolution', type=int, default=None, help='입력 해상도 override (rfdetr-object only)')
+parser.add_argument('--early-stopping', action='store_true', help='검증 mAP 정체 시 조기 종료 (rfdetr-object only)')
+parser.add_argument('--no-run-test', action='store_true', help='학습 종료 후 test 스플릿 평가 생략 (rfdetr-object only)')
 args = parser.parse_args()
 
 def train_road_model():
+    from ultralytics import YOLO
 
     DATA_PATH = 'cctv-roadseg-dataset/data.yaml'
 
@@ -33,6 +43,7 @@ def train_road_model():
     )
 
 def train_crosswalk_model():
+    from ultralytics import YOLO
 
     DATA_PATH = 'cctv-crosswalk-dataset/data.yaml'
 
@@ -54,6 +65,7 @@ def train_crosswalk_model():
     )
 
 def train_object_model():
+    from ultralytics import YOLO
 
     DATA_PATH = 'cctv-object-dataset/data.yaml'
 
@@ -79,33 +91,42 @@ def train_rfdetr_object_model():
     """RF-DETR 기반 객체 탐지 모델 학습.
 
     사전 준비:
-        pip install rfdetr supervision
-        python util/convert_yolo_to_coco.py --src cctv-object-dataset --dst cctv-object-dataset-coco
+        pip install rfdetr supervision pycocotools
+        # AI-Hub + Roboflow 통합 COCO 데이터셋 빌드
+        python util/build_aihub_coco.py --ratio 2.0 --seed 42
 
-    학습 결과는 args.output_dir 아래에 checkpoint.pth / best_checkpoint.pth 로 저장된다.
+    학습 결과는 args.output_dir 아래에 checkpoint_best_total.pth / checkpoint_best_ema.pth 로 저장된다.
     """
+    SIZE_TO_CLASS = {
+        'nano': 'RFDETRNano', 'small': 'RFDETRSmall', 'medium': 'RFDETRMedium',
+        'base': 'RFDETRBase', 'large': 'RFDETRLarge',
+    }
     try:
-        from rfdetr import RFDETRLarge
+        import rfdetr
+        ModelClass = getattr(rfdetr, SIZE_TO_CLASS[args.rfdetr_size])
     except ImportError:
         raise SystemExit(
-            "rfdetr 패키지가 없습니다. `pip install rfdetr supervision` 후 재시도하세요."
+            "rfdetr 패키지가 없습니다. `pip install rfdetr supervision pycocotools` 후 재시도하세요."
         )
 
-    import os
     dataset_dir = args.dataset
     if not os.path.isdir(dataset_dir):
         raise FileNotFoundError(
             f"COCO 포맷 데이터셋 디렉토리를 찾을 수 없습니다: {dataset_dir}\n"
-            "먼저 변환 스크립트를 실행하세요:\n"
-            "  python util/convert_yolo_to_coco.py --src cctv-object-dataset --dst cctv-object-dataset-coco"
+            "먼저 데이터셋 빌드 스크립트를 실행하세요:\n"
+            "  python util/build_aihub_coco.py --ratio 2.0 --seed 42"
         )
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    print(f"[RF-DETR] device={device}, dataset={dataset_dir}, epochs={args.epochs}")
-    print(f"[RF-DETR] batch={args.batch}, grad_accum={args.grad_accum}, lr={args.lr}")
-    print(f"[RF-DETR] effective batch size = {args.batch * args.grad_accum}")
+    print(f"[RF-DETR] size={args.rfdetr_size} ({SIZE_TO_CLASS[args.rfdetr_size]}), device={device}")
+    print(f"[RF-DETR] dataset={dataset_dir}, epochs={args.epochs}, output={args.output_dir}")
+    print(f"[RF-DETR] batch={args.batch}, grad_accum={args.grad_accum} (effective {args.batch * args.grad_accum}), lr={args.lr}")
 
-    model = RFDETRLarge()
+    model_kwargs = {}
+    if args.resolution is not None:
+        model_kwargs['resolution'] = args.resolution
+    model = ModelClass(**model_kwargs)
+
     model.train(
         dataset_dir=dataset_dir,
         epochs=args.epochs,
@@ -114,6 +135,9 @@ def train_rfdetr_object_model():
         lr=args.lr,
         output_dir=args.output_dir,
         device=device,
+        early_stopping=args.early_stopping,
+        run_test=not args.no_run_test,
+        tensorboard=True,
     )
 
 
