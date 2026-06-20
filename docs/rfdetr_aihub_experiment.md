@@ -214,6 +214,22 @@ python util/summarize_results.py
   50 epoch / Nano 모델로는 한계가 있다.
 - **car** 가 이미 충분히 많은 데이터를 갖고 있어 상대 개선 폭이 가장 작다.
 
+### 6.4 추론 비교 이미지
+
+각 패널은 **Ground Truth | Baseline | Augmented** 순서로 배치. threshold=0.35.
+색상: 🟦 car · 🟥 person · 🟣 riders · 🟠 bus · 🟩 truck
+
+**RF 도메인 (Roboflow CCTV)**
+
+![RF 도메인 비교](assets/comparison/grid_rf.jpg)
+
+**AI-Hub 도메인 (한국 시내도로 CCTV)**
+
+![AI-Hub 도메인 비교](assets/comparison/grid_aihub.jpg)
+
+AI-Hub 도메인에서 baseline 은 버스·트럭을 놓치는 경우가 많은 반면, augmented 는
+동일 장면에서 더 많은 객체를 올바른 클래스로 탐지한다.
+
 ---
 
 ## 7. 결론 및 한계
