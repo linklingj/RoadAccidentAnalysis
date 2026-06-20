@@ -216,6 +216,8 @@ python util/summarize_results.py
 
 ### 6.4 추론 비교 이미지
 
+#### 6.4.1 Baseline vs Augmented (동일 학습 파이프라인, 데이터만 다름)
+
 각 패널은 **Ground Truth | Baseline | Augmented** 순서로 배치. threshold=0.35.
 색상: 🟦 car · 🟥 person · 🟣 riders · 🟠 bus · 🟩 truck
 
@@ -229,6 +231,22 @@ python util/summarize_results.py
 
 AI-Hub 도메인에서 baseline 은 버스·트럭을 놓치는 경우가 많은 반면, augmented 는
 동일 장면에서 더 많은 객체를 올바른 클래스로 탐지한다.
+
+#### 6.4.2 Before vs After (AI-Hub 추가 전 0519 모델 vs 추가 후 augmented 모델)
+
+각 패널은 **Before (RF only, 0519) | After (RF + AI-Hub)** 순서. threshold=0.30.
+`attention` / `crosswalk` 클래스는 시각화에서 제외.
+
+**RF 도메인**
+
+![Before After RF](assets/before_after/before_after_rf.jpg)
+
+**AI-Hub 도메인**
+
+![Before After AIHub](assets/before_after/before_after_aihub.jpg)
+
+AI-Hub 도메인 야간 장면에서 Before 모델은 8개를 탐지한 반면 After 모델은 20개를
+탐지하며, 특히 원거리 차량·버스·트럭 인식이 크게 개선됐다.
 
 ---
 
