@@ -15,6 +15,7 @@ from ultralytics import YOLO
 
 
 DEFAULT_ROAD_MODEL_PATH = "runs/segment/0401-road/weights/best.pt"
+DEFAULT_ROAD_UNET_MODEL_PATH = "runs/smp-road/best.pt"
 DEFAULT_CROSSWALK_MODEL_PATH = "runs/segment/0406-crosswalk/weights/best.pt"
 DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0619-object/weights/best.pt"
 DEFAULT_RFDETR_OBJECT_MODEL_PATH = "runs/detect/rfdetr-object-0519/best_checkpoint.pth"
@@ -29,6 +30,13 @@ class PipelineConfig:
     road_model_path: str = DEFAULT_ROAD_MODEL_PATH
     crosswalk_model_path: str = DEFAULT_CROSSWALK_MODEL_PATH
     object_model_path: str = DEFAULT_OBJECT_MODEL_PATH
+    # 도로 segmentation 백엔드: "yolo"(YOLO-seg) | "unet"(SMP U-Net)
+    # U-Net 비교/통합은 docs/unet_vs_yolo_roadseg.md 참고
+    road_detector_type: str = "yolo"
+    road_unet_model_path: str = DEFAULT_ROAD_UNET_MODEL_PATH
+    road_unet_imgsz: int = 512
+    road_unet_threshold: float = 0.5
+    road_unet_min_area: int = 1500  # 이보다 작은 도로 마스크 조각(노이즈)은 폐기
     # "yolo" | "rfdetr"
     object_detector_type: str = "yolo"
     rfdetr_object_model_path: str = DEFAULT_RFDETR_OBJECT_MODEL_PATH
@@ -1246,7 +1254,20 @@ class RoadSceneProjector:
     def __init__(self, config: Optional[PipelineConfig] = None):
         self.config = config or PipelineConfig()
         self.device = _resolve_device(self.config.device)
-        self.road_model = YOLO(self.config.road_model_path)
+
+        # 도로 백엔드 선택: YOLO-seg(기본) 또는 SMP U-Net.
+        # U-Net 의존성(segmentation_models_pytorch)은 "unet" 일 때만 지연 로드한다.
+        self._use_road_unet = self.config.road_detector_type == "unet"
+        if self._use_road_unet:
+            from smp_road.model import load_checkpoint  # lazy import
+            self._road_torch_device = _perspective_torch_device(self.device)
+            self.road_model, _ = load_checkpoint(
+                self.config.road_unet_model_path, device=self._road_torch_device
+            )
+        else:
+            self._road_torch_device = None
+            self.road_model = YOLO(self.config.road_model_path)
+
         self.crosswalk_model = YOLO(self.config.crosswalk_model_path)
         self.perspective_model = _load_perspective_model(self.config.perspective_version, self.device)
 
@@ -1262,6 +1283,25 @@ class RoadSceneProjector:
             self.object_model = YOLO(self.config.object_model_path)
             self._sv_tracker = None
 
+    def _infer_road(self, image_bgr: np.ndarray) -> Dict[str, Any]:
+        """도로 백엔드 추상화: YOLO-seg / U-Net 어느 쪽이든 {'road_polygons_uv': [...]} 반환."""
+        if self._use_road_unet:
+            from smp_road.model import infer_road_polygons  # lazy import
+            return infer_road_polygons(
+                self.road_model,
+                image_bgr,
+                imgsz=self.config.road_unet_imgsz,
+                threshold=self.config.road_unet_threshold,
+                min_area=self.config.road_unet_min_area,
+                device=self._road_torch_device,
+            )
+        return infer_road_model(
+            image_bgr=image_bgr,
+            model=self.road_model,
+            conf=self.config.road_conf,
+            device=self.device,
+        )
+
     def run(self, image_path: str, save_dir: Optional[str] = None) -> Dict[str, Any]:
         image_bgr = cv2.imread(image_path)
         if image_bgr is None:
@@ -1272,12 +1312,7 @@ class RoadSceneProjector:
         if self.config.use_clahe:
             image_bgr = _apply_clahe(image_bgr)
 
-        road_out = infer_road_model(
-            image_bgr=image_bgr,
-            model=self.road_model,
-            conf=self.config.road_conf,
-            device=self.device,
-        )
+        road_out = self._infer_road(image_bgr)
         crosswalk_out = infer_crosswalk_model(
             image_bgr=image_bgr,
             model=self.crosswalk_model,
@@ -1432,12 +1467,7 @@ class RoadSceneProjector:
             first_frame = _apply_clahe(first_frame)
 
         # Road model is intentionally run once for static-camera video.
-        road_out = infer_road_model(
-            image_bgr=first_frame,
-            model=self.road_model,
-            conf=self.config.road_conf,
-            device=self.device,
-        )
+        road_out = self._infer_road(first_frame)
         road_polygons_uv = road_out["road_polygons_uv"]
         crosswalk_out = infer_crosswalk_model(
             image_bgr=first_frame,

@@ -98,8 +98,12 @@ def infer_road_polygons(
     image_bgr: np.ndarray,
     imgsz: int = 512,
     threshold: float = 0.5,
+    min_area: int = 1500,
     device: Any = "cpu",
 ) -> Dict[str, Any]:
-    """`infer.infer_road_model` 호환 반환: {'road_polygons_uv': [...], 'mask': ...}."""
+    """`infer.infer_road_model` 호환 반환: {'road_polygons_uv': [...], 'mask': ...}.
+
+    min_area: 이 픽셀 면적 미만의 작은 노이즈 조각 폴리곤은 버린다(메인 도로만 유지).
+    """
     mask = predict_mask(model, image_bgr, imgsz=imgsz, threshold=threshold, device=device)
-    return {"road_polygons_uv": mask_to_polygons(mask), "mask": mask}
+    return {"road_polygons_uv": mask_to_polygons(mask, min_area=min_area), "mask": mask}
