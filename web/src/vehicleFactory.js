@@ -10,9 +10,11 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // model is normalised to. `forwardSign` flips orientation if needed (-1).
 // Unknown vehicle classes fall back to the car config.
 const GLB_CONFIGS = {
-  car:   { url: 'assets/coupe.glb', targetLen: 4.4, forwardSign: 1 },
-  bus:   { url: 'assets/coupe.glb', targetLen: 5.5, forwardSign: 1 },
-  truck: { url: 'assets/armor.glb', targetLen: 4.0, forwardSign: 1 },
+  car:    { url: 'assets/coupe.glb', targetLen: 4.4, forwardSign: 1 },
+  bus:    { url: 'assets/coupe.glb', targetLen: 5.5, forwardSign: 1 },
+  truck:  { url: 'assets/armor.glb', targetLen: 4.0, forwardSign: 1 },
+  person: { url: 'assets/human.glb', targetLen: 0.5, forwardSign: 1 },
+  riders: { url: 'assets/bike.glb',  targetLen: 2.0, forwardSign: 1 },
 };
 const GLB_FALLBACK_CONFIG = GLB_CONFIGS.car;
 

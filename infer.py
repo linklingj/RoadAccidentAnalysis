@@ -32,13 +32,13 @@ class PipelineConfig:
     object_model_path: str = DEFAULT_OBJECT_MODEL_PATH
     # 도로 segmentation 백엔드: "yolo"(YOLO-seg) | "unet"(SMP U-Net)
     # U-Net 비교/통합은 docs/unet_vs_yolo_roadseg.md 참고
-    road_detector_type: str = "yolo"
+    road_detector_type: str = "unet"
     road_unet_model_path: str = DEFAULT_ROAD_UNET_MODEL_PATH
     road_unet_imgsz: int = 512
     road_unet_threshold: float = 0.5
     road_unet_min_area: int = 1500  # 이보다 작은 도로 마스크 조각(노이즈)은 폐기
     # "yolo" | "rfdetr"
-    object_detector_type: str = "yolo"
+    object_detector_type: str = "rfdetr"
     rfdetr_object_model_path: str = DEFAULT_RFDETR_OBJECT_MODEL_PATH
     perspective_version: str = DEFAULT_PERSPECTIVE_VERSION
     road_conf: float = 0.25
@@ -52,6 +52,9 @@ class PipelineConfig:
     track_max_distance_m: float = 3.0
     track_max_missed_frames: int = 10
     trajectory_max_length: int = 60
+    track_world_nms_distance_m: float = 0.8
+    track_reid_distance_m: float = 2.0
+    track_reid_max_missed_frames: int = 8
     video_recompute_camera_each_frame: bool = False
     use_clahe: bool = True
     device: Optional[Any] = None
@@ -374,12 +377,33 @@ def infer_object_model(
     }
 
 
-def _load_rfdetr_model(model_path: str) -> Any:
+def _get_rfdetr_class_names(model: Any) -> List[str]:
+    """로드된 RF-DETR 모델에서 클래스 이름 목록을 추출한다.
+
+    체크포인트에 내장된 class_names를 우선 사용하고, 없으면 OBJECT_CLASS_NAMES로 폴백.
+    """
+    for getter in (
+        lambda m: m.model.class_names,
+        lambda m: m.class_names,
+        lambda m: m.model.model.class_names,
+    ):
+        try:
+            names = getter(model)
+            if names:
+                return list(names)
+        except Exception:
+            pass
+    return list(OBJECT_CLASS_NAMES)
+
+
+def _load_rfdetr_model(model_path: str) -> Tuple[Any, List[str]]:
     try:
         from rfdetr import RFDETRLarge  # type: ignore
     except ImportError:
         raise ImportError("rfdetr 패키지가 없습니다. `pip install rfdetr supervision` 을 실행하세요.")
-    return RFDETRLarge(pretrain_weights=model_path)
+    model = RFDETRLarge(pretrain_weights=model_path)
+    class_names = _get_rfdetr_class_names(model)
+    return model, class_names
 
 
 def _extract_rfdetr_detections(
@@ -722,12 +746,43 @@ def _track_color(track_id: int) -> Tuple[int, int, int]:
     return int(b), int(g), int(r)
 
 
+def _suppress_duplicate_detections_world(
+    objects_bev: List[Dict[str, Any]],
+    min_distance_m: float,
+) -> List[Dict[str, Any]]:
+    """월드 좌표 NMS: 같은 클래스 탐지가 min_distance_m 이내에 겹칠 때 confidence 낮은 쪽 제거."""
+    if min_distance_m <= 0:
+        return objects_bev
+    sorted_objs = sorted(objects_bev, key=lambda o: float(o.get("confidence", 0.0)), reverse=True)
+    kept: List[Dict[str, Any]] = []
+    for obj in sorted_objs:
+        wp = obj.get("world_position_m")
+        cls = obj.get("class_name")
+        if wp is None:
+            kept.append(obj)
+            continue
+        duplicate = False
+        for kept_obj in kept:
+            kwp = kept_obj.get("world_position_m")
+            if kwp is None or kept_obj.get("class_name") != cls:
+                continue
+            if math.hypot(float(wp[0]) - float(kwp[0]), float(wp[1]) - float(kwp[1])) < min_distance_m:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(obj)
+    return kept
+
+
 class BEVObjectTracker:
-    """Accumulates BEV trajectories using track_ids supplied by ByteTrack (via YOLO.track)."""
+    """월드 공간 검증과 Re-ID를 포함한 BEV 궤적 추적기."""
 
     def __init__(self, cfg: PipelineConfig):
         self.max_missed_frames = cfg.track_max_missed_frames
         self.max_history = cfg.trajectory_max_length
+        self.max_distance_m = cfg.track_max_distance_m
+        self.reid_distance_m = cfg.track_reid_distance_m
+        self.reid_max_missed = cfg.track_reid_max_missed_frames
         self.tracks: Dict[int, Dict[str, Any]] = {}
 
     def _new_track(self, track_id: int, obj: Dict[str, Any]) -> None:
@@ -740,30 +795,85 @@ class BEVObjectTracker:
             "bev_xy": tuple(obj["bev_xy"]),
             "missed": 0,
             "history": history,
+            "vx": 0.0,
+            "vz": 0.0,
+            "age": 1,
         }
+
+    def _predict_position(self, track_id: int) -> np.ndarray:
+        """상수 속도 모델로 소멸 프레임 수만큼 위치를 예측한다."""
+        track = self.tracks[track_id]
+        missed = max(track["missed"], 0)
+        pos = track["world_position_m"].copy()
+        if missed > 0:
+            pos[0] += track["vx"] * missed
+            pos[1] += track["vz"] * missed
+        return pos
 
     def update(self, objects_bev: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[int, List[Tuple[int, int]]]]:
         seen_track_ids: set[int] = set()
-
         tracked_objects: List[Dict[str, Any]] = []
+
         for obj in objects_bev:
-            track_id = obj.get("track_id")
-            if track_id is None:
+            bytetrack_id = obj.get("track_id")
+            world_pos_raw = obj.get("world_position_m")
+            cls = obj.get("class_name", "")
+
+            if bytetrack_id is None:
                 tracked_objects.append(obj)
                 continue
 
-            seen_track_ids.add(track_id)
-            if track_id not in self.tracks:
-                self._new_track(track_id, obj)
+            world_pos: Optional[np.ndarray] = (
+                np.asarray(world_pos_raw, dtype=np.float32) if world_pos_raw is not None else None
+            )
+
+            # 기존에 알려진 트랙은 ByteTrack 결정을 그대로 신뢰한다.
+            if bytetrack_id in self.tracks:
+                assigned_id: int = bytetrack_id
             else:
-                track = self.tracks[track_id]
-                track["world_position_m"] = np.asarray(obj["world_position_m"], dtype=np.float32)
-                track["bev_xy"] = tuple(obj["bev_xy"])
+                # ByteTrack이 새 ID를 부여했을 때만 Re-ID 시도:
+                # 최근 소멸한 같은 클래스 트랙 중 예측 위치와 가장 가까운 것을 찾는다.
+                assigned_id = bytetrack_id
+                if world_pos is not None:
+                    best_dist = self.reid_distance_m
+                    for tid, track in self.tracks.items():
+                        if track["missed"] == 0:
+                            continue
+                        if track.get("class_name") != cls:
+                            continue
+                        pred_pos = self._predict_position(tid)
+                        dist = math.hypot(
+                            float(world_pos[0]) - float(pred_pos[0]),
+                            float(world_pos[1]) - float(pred_pos[1]),
+                        )
+                        if dist < best_dist:
+                            best_dist = dist
+                            assigned_id = tid
+
+            seen_track_ids.add(assigned_id)
+
+            if assigned_id not in self.tracks:
+                obj_for_new = dict(obj)
+                obj_for_new["track_id"] = assigned_id
+                self._new_track(assigned_id, obj_for_new)
+            else:
+                track = self.tracks[assigned_id]
+                if world_pos is not None:
+                    elapsed = max(1, track["missed"] + 1)
+                    alpha = min(1.0, 2.0 / (track["age"] + 1))
+                    raw_vx = float(world_pos[0] - track["world_position_m"][0]) / elapsed
+                    raw_vz = float(world_pos[1] - track["world_position_m"][1]) / elapsed
+                    track["vx"] = (1 - alpha) * track["vx"] + alpha * raw_vx
+                    track["vz"] = (1 - alpha) * track["vz"] + alpha * raw_vz
+                    track["world_position_m"] = world_pos
+                if obj.get("bev_xy") is not None:
+                    track["bev_xy"] = tuple(obj["bev_xy"])
+                    track["history"].append(tuple(obj["bev_xy"]))
                 track["missed"] = 0
-                track["history"].append(tuple(obj["bev_xy"]))
+                track["age"] += 1
 
             item = dict(obj)
-            item["track_id"] = track_id
+            item["track_id"] = assigned_id
             tracked_objects.append(item)
 
         to_delete: List[int] = []
@@ -771,15 +881,17 @@ class BEVObjectTracker:
             if track_id in seen_track_ids:
                 continue
             track["missed"] += 1
-            if track["missed"] > self.max_missed_frames:
+            # reid_max_missed 이후 완전 제거 (max_missed_frames는 시각화 기준으로 남김)
+            if track["missed"] > self.reid_max_missed:
                 to_delete.append(track_id)
         for track_id in to_delete:
             del self.tracks[track_id]
 
+        # 현재 프레임에서 활성(missed==0) 트랙의 궤적만 시각화용으로 반환
         trajectories = {
             track_id: list(track["history"])
             for track_id, track in self.tracks.items()
-            if len(track["history"]) >= 2
+            if track["missed"] == 0 and len(track["history"]) >= 2
         }
         return tracked_objects, trajectories
 
@@ -1273,14 +1385,17 @@ class RoadSceneProjector:
 
         self._use_rfdetr = self.config.object_detector_type == "rfdetr"
         if self._use_rfdetr:
-            self.object_model = _load_rfdetr_model(self.config.rfdetr_object_model_path)
+            self.object_model, self._rfdetr_class_names = _load_rfdetr_model(self.config.rfdetr_object_model_path)
             try:
                 import supervision as sv  # type: ignore
-                self._sv_tracker = sv.ByteTrack()
+                self._sv_tracker = sv.ByteTrack(
+                    lost_track_buffer=30,
+                )
             except ImportError:
                 raise ImportError("supervision 패키지가 없습니다. `pip install supervision` 을 실행하세요.")
         else:
             self.object_model = YOLO(self.config.object_model_path)
+            self._rfdetr_class_names = list(OBJECT_CLASS_NAMES)
             self._sv_tracker = None
 
     def _infer_road(self, image_bgr: np.ndarray) -> Dict[str, Any]:
@@ -1324,7 +1439,7 @@ class RoadSceneProjector:
                 image_bgr=image_bgr,
                 model=self.object_model,
                 conf=self.config.object_conf,
-                class_names=OBJECT_CLASS_NAMES,
+                class_names=self._rfdetr_class_names,
                 color_image_bgr=color_src,
             )
         else:
@@ -1406,7 +1521,7 @@ class RoadSceneProjector:
                 image_bgr=frame_bgr,
                 model=self.object_model,
                 conf=self.config.object_conf,
-                class_names=OBJECT_CLASS_NAMES,
+                class_names=self._rfdetr_class_names,
                 sv_tracker=self._sv_tracker,
                 color_image_bgr=color_image_bgr,
             )
@@ -1420,6 +1535,7 @@ class RoadSceneProjector:
                 color_image_bgr=color_image_bgr,
             )
         projected = _project_objects_to_bev(obj_out["detections"], camera, self.config)
+        projected = _suppress_duplicate_detections_world(projected, self.config.track_world_nms_distance_m)
         tracked_objects, trajectories = tracker.update(projected)
         track_id_map = {
             int(item["detection_id"]): int(item["track_id"])

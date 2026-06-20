@@ -77,7 +77,7 @@ export class ViewerUI {
     this.devLength.addEventListener('input', emitStyle);
     this.$('devReset').addEventListener('click', () => {
       this.devColor.value = '#ffffff';
-      this.vehScale.value = '0.35';
+      this.vehScale.value = '0.15';
       this.devLength.value = '1';
       this._emitVehicleStyle();
     });

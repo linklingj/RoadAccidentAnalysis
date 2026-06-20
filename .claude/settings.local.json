@@ -42,7 +42,8 @@
       "Bash(pkill -f \"python -m http.server 8765\")",
       "Skill(claude-in-chrome)",
       "Bash(node --input-type=module)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(conda run *)"
     ]
   }
 }
