@@ -1,0 +1,42 @@
+# VCS
+.git
+.gitignore
+
+# Claude / IDE
+.claude
+.vscode
+.idea
+
+# Datasets (local only, not needed in container)
+cctv-object-dataset/
+cctv-road-dataset/
+cctv-roadseg-dataset/
+cctv-crosswalk-dataset/
+cctv-object-dataset-coco/
+
+# Base model files (not the trained weights in runs/)
+yolo26l-seg.pt
+yolo26s-seg.pt
+yolo26n.pt
+
+# Old/unused trained runs (keep only the ones in Dockerfile COPY)
+runs/segment/0401-road/
+
+# Scratch dirs
+output/
+uploads/
+input/
+__pycache__/
+*.py[cod]
+*.log
+
+# Docs / notebooks
+docs/
+Road3dReconstruction/
+*.ipynb
+
+# PerspectiveFields heavy assets (git history, demo images)
+PerspectiveFields/.git/
+PerspectiveFields/assets/
+PerspectiveFields/demo/
+PerspectiveFields/notebooks/

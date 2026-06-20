@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sys
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -15,13 +15,14 @@ from ultralytics import YOLO
 
 
 DEFAULT_ROAD_MODEL_PATH = "runs/segment/0401-road/weights/best.pt"
+DEFAULT_ROAD_UNET_MODEL_PATH = "runs/smp-road/best.pt"
 DEFAULT_CROSSWALK_MODEL_PATH = "runs/segment/0406-crosswalk/weights/best.pt"
-DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0401-object/weights/best.pt"
-DEFAULT_RFDETR_OBJECT_MODEL_PATH = "runs/detect/rfdetr-object/best_checkpoint.pth"
+DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0619-object/weights/best.pt"
+DEFAULT_RFDETR_OBJECT_MODEL_PATH = "runs/detect/rfdetr-object-0519/best_checkpoint.pth"
 DEFAULT_PERSPECTIVE_VERSION = "Paramnet-360Cities-edina-centered"
 
 # cctv-object-dataset/data.yaml names 순서와 동일하게 유지
-OBJECT_CLASS_NAMES: List[str] = ["attention", "bus", "car", "crosswalk", "person", "riders", "truck"]
+OBJECT_CLASS_NAMES: List[str] = ["bus", "car", "person", "riders", "truck"]
 
 
 @dataclass
@@ -29,6 +30,13 @@ class PipelineConfig:
     road_model_path: str = DEFAULT_ROAD_MODEL_PATH
     crosswalk_model_path: str = DEFAULT_CROSSWALK_MODEL_PATH
     object_model_path: str = DEFAULT_OBJECT_MODEL_PATH
+    # 도로 segmentation 백엔드: "yolo"(YOLO-seg) | "unet"(SMP U-Net)
+    # U-Net 비교/통합은 docs/unet_vs_yolo_roadseg.md 참고
+    road_detector_type: str = "yolo"
+    road_unet_model_path: str = DEFAULT_ROAD_UNET_MODEL_PATH
+    road_unet_imgsz: int = 512
+    road_unet_threshold: float = 0.5
+    road_unet_min_area: int = 1500  # 이보다 작은 도로 마스크 조각(노이즈)은 폐기
     # "yolo" | "rfdetr"
     object_detector_type: str = "yolo"
     rfdetr_object_model_path: str = DEFAULT_RFDETR_OBJECT_MODEL_PATH
@@ -47,9 +55,9 @@ class PipelineConfig:
     video_recompute_camera_each_frame: bool = False
     use_clahe: bool = True
     device: Optional[Any] = None
-    # Unity 연동: scene JSON을 StreamingAssets로 미러링하여 Unity SceneLoader가 바로 로드
-    unity_streaming_assets_dir: Optional[str] = "Road3dReconstruction/Assets/StreamingAssets"
-    unity_scene_filename: str = "scene_data.json"
+    # 웹 뷰어 연동: scene JSON을 web/data로 미러링하여 three.js 뷰어가 바로 로드
+    web_data_dir: Optional[str] = "web/data"
+    web_scene_filename: str = "scene_data.json"
 
 
 def _resolve_device(device: Optional[Any]) -> Any:
@@ -200,7 +208,53 @@ def _footpoint_from_mask_robust(
     return float(fallback_x), float(fallback_y)
 
 
-def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
+# 차량을 'white' / 'black'으로 가르는 명도(median luma, 0-255) 임계값. CCTV 크롭 기준.
+CAR_COLOR_BRIGHTNESS_THRESH = 95.0
+
+
+def _estimate_car_color(
+    image_bgr: Optional[np.ndarray],
+    raster: Optional[np.ndarray],
+    bbox: Tuple[float, float, float, float],
+) -> Optional[str]:
+    """차량 픽셀의 명도로 'white' / 'black'을 분류한다.
+
+    가능하면 segmentation 마스크 안쪽 픽셀을 쓰고, 마스크가 없으면 도로/배경이
+    덜 섞이도록 bbox 중앙 영역을 사용한다. 판단 불가 시 None.
+    명도는 창문·그림자에 흔들리지 않도록 luma의 median을 쓴다.
+    """
+    if image_bgr is None or image_bgr.size == 0:
+        return None
+    h, w = image_bgr.shape[:2]
+    x1, y1, x2, y2 = (int(round(v)) for v in bbox)
+    x1 = max(0, min(w - 1, x1))
+    y1 = max(0, min(h - 1, y1))
+    x2 = max(x1 + 1, min(w, x2))
+    y2 = max(y1 + 1, min(h, y2))
+
+    pixels: Optional[np.ndarray] = None
+    if raster is not None and raster.shape[:2] == (h, w):
+        sub_mask = raster[y1:y2, x1:x2].astype(bool)
+        if int(sub_mask.sum()) >= 25:
+            pixels = image_bgr[y1:y2, x1:x2][sub_mask]
+    if pixels is None:
+        bw, bh = x2 - x1, y2 - y1
+        cx1, cx2 = x1 + int(bw * 0.25), x2 - int(bw * 0.25)
+        cy1, cy2 = y1 + int(bh * 0.25), y2 - int(bh * 0.25)
+        if cx2 <= cx1 or cy2 <= cy1:
+            cx1, cy1, cx2, cy2 = x1, y1, x2, y2
+        pixels = image_bgr[cy1:cy2, cx1:cx2].reshape(-1, 3)
+    if pixels.size == 0:
+        return None
+
+    luma = 0.114 * pixels[:, 0] + 0.587 * pixels[:, 1] + 0.299 * pixels[:, 2]
+    return "white" if float(np.median(luma)) >= CAR_COLOR_BRIGHTNESS_THRESH else "black"
+
+
+def _extract_object_detections(
+    result: Any,
+    color_image_bgr: Optional[np.ndarray] = None,
+) -> List[Dict[str, Any]]:
     detections: List[Dict[str, Any]] = []
     if result is None or result.boxes is None:
         return detections
@@ -243,17 +297,21 @@ def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
 
         track_id = int(track_ids[i].item()) if track_ids is not None else None
 
-        detections.append(
-            {
-                "detection_id": i,
-                "class_id": cls_id,
-                "class_name": class_name,
-                "confidence": conf,
-                "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
-                "footpoint_uv": [float(foot_x), float(foot_y)],
-                "track_id": track_id,
-            }
-        )
+        det: Dict[str, Any] = {
+            "detection_id": i,
+            "class_id": cls_id,
+            "class_name": class_name,
+            "confidence": conf,
+            "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
+            "footpoint_uv": [float(foot_x), float(foot_y)],
+            "track_id": track_id,
+        }
+        # 색 분류는 'car'에만 적용한다 (요청 범위).
+        if class_name == "car" and color_image_bgr is not None:
+            color = _estimate_car_color(color_image_bgr, raster_i, (x1, y1, x2, y2))
+            if color is not None:
+                det["color"] = color
+        detections.append(det)
     return detections
 
 
@@ -302,6 +360,7 @@ def infer_object_model(
     conf: float,
     device: Any,
     use_tracker: bool = False,
+    color_image_bgr: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     common_kwargs = dict(source=image_bgr, save=False, conf=conf, device=device, verbose=False)
     if use_tracker:
@@ -311,7 +370,7 @@ def infer_object_model(
     result = results[0] if results else None
     return {
         "raw_result": result,
-        "detections": _extract_object_detections(result),
+        "detections": _extract_object_detections(result, color_image_bgr=color_image_bgr),
     }
 
 
@@ -326,6 +385,7 @@ def _load_rfdetr_model(model_path: str) -> Any:
 def _extract_rfdetr_detections(
     detections: Any,
     class_names: List[str],
+    color_image_bgr: Optional[np.ndarray] = None,
 ) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     if detections is None or len(detections) == 0:
@@ -351,7 +411,7 @@ def _extract_rfdetr_detections(
 
         track_id = int(track_ids[i]) if track_ids is not None else None
 
-        results.append({
+        det: Dict[str, Any] = {
             "detection_id": i,
             "class_id": cls_id,
             "class_name": class_name,
@@ -359,7 +419,13 @@ def _extract_rfdetr_detections(
             "bbox_xyxy": [x1, y1, x2, y2],
             "footpoint_uv": [foot_x, foot_y],
             "track_id": track_id,
-        })
+        }
+        # RF-DETR는 마스크가 없어 bbox 기반으로 'car' 색을 분류한다.
+        if class_name == "car" and color_image_bgr is not None:
+            color = _estimate_car_color(color_image_bgr, None, (x1, y1, x2, y2))
+            if color is not None:
+                det["color"] = color
+        results.append(det)
     return results
 
 
@@ -369,6 +435,7 @@ def infer_object_model_rfdetr(
     conf: float,
     class_names: List[str],
     sv_tracker: Optional[Any] = None,
+    color_image_bgr: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     """RF-DETR 모델로 객체를 탐지하고 (선택적으로) supervision ByteTrack으로 추적한다."""
     import PIL.Image  # type: ignore
@@ -383,7 +450,9 @@ def infer_object_model_rfdetr(
 
     return {
         "raw_result": detections,
-        "detections": _extract_rfdetr_detections(detections, class_names),
+        "detections": _extract_rfdetr_detections(
+            detections, class_names, color_image_bgr=color_image_bgr
+        ),
     }
 
 
@@ -995,14 +1064,15 @@ def export_scene_json(
     frame_index: int = 0,
     frames_history: Optional[List[Dict[str, Any]]] = None,
     tracks_registry: Optional[Dict[int, str]] = None,
+    track_colors: Optional[Dict[int, str]] = None,
     fps: float = 0.0,
 ) -> Dict[str, Any]:
-    """Build a Unity-friendly scene description in real-world (meter) coordinates.
+    """Build a web/three.js-friendly scene description in real-world (meter) coordinates.
 
-    Schema is shaped for `JsonUtility.FromJson<T>` consumption (no dictionaries).
-    All polygons are projected from UV to ground plane using the same homography
-    used for BEV rendering. Trajectory points stored in BEV pixel space are
-    inverse-projected back to world meters.
+    Emitted as plain JSON consumed by the three.js viewer (web/). All polygons are
+    projected from UV to ground plane using the same homography used for BEV
+    rendering. Trajectory points stored in BEV pixel space are inverse-projected
+    back to world meters.
     """
     cfg = cfg or PipelineConfig()
     cam_h = float(cfg.camera_height_m)
@@ -1023,6 +1093,26 @@ def export_scene_json(
                 out.append({"points": pts})
         return out
 
+    def _bbox_dims_m(
+        bbox: Optional[List[float]],
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Project bbox bottom edge → width_m; top–bottom centres → length_m."""
+        if bbox is None:
+            return None, None
+        x1, y1, x2, y2 = bbox
+        left = project_uv_to_ground(x1, y2, camera, cam_h)
+        right = project_uv_to_ground(x2, y2, camera, cam_h)
+        w = None
+        if left is not None and right is not None:
+            w = round(math.hypot(right[0] - left[0], right[1] - left[1]), 3)
+        cx = (x1 + x2) * 0.5
+        top_g = project_uv_to_ground(cx, y1, camera, cam_h)
+        bot_g = project_uv_to_ground(cx, y2, camera, cam_h)
+        l = None
+        if top_g is not None and bot_g is not None:
+            l = round(math.hypot(top_g[0] - bot_g[0], top_g[1] - bot_g[1]), 3)
+        return w, l
+
     objects_out: List[Dict[str, Any]] = []
     for obj in projected_objects:
         wp = obj.get("world_position_m")
@@ -1030,21 +1120,27 @@ def export_scene_json(
             continue
         track_id = obj.get("track_id")
         cov = obj.get("world_cov") or [0.0, 0.0, 0.0]
-        objects_out.append(
-            {
-                "track_id": int(track_id) if track_id is not None else -1,
-                "class_name": str(obj.get("class_name", "")),
-                "confidence": round(float(obj.get("confidence", 0.0)), 3),
-                "x_m": round(float(wp[0]), 3),
-                "z_m": round(float(wp[1]), 3),
-                "x_m_smoothed": round(float(wp[0]), 3),
-                "z_m_smoothed": round(float(wp[1]), 3),
-                "vx_m": 0.0,
-                "vz_m": 0.0,
-                "x_var": round(float(cov[0]), 6),
-                "z_var": round(float(cov[2]), 6),
-            }
-        )
+        entry: Dict[str, Any] = {
+            "track_id": int(track_id) if track_id is not None else -1,
+            "class_name": str(obj.get("class_name", "")),
+            "confidence": round(float(obj.get("confidence", 0.0)), 3),
+            "x_m": round(float(wp[0]), 3),
+            "z_m": round(float(wp[1]), 3),
+            "x_m_smoothed": round(float(wp[0]), 3),
+            "z_m_smoothed": round(float(wp[1]), 3),
+            "vx_m": 0.0,
+            "vz_m": 0.0,
+            "x_var": round(float(cov[0]), 6),
+            "z_var": round(float(cov[2]), 6),
+        }
+        w_m, l_m = _bbox_dims_m(obj.get("bbox_xyxy"))
+        if w_m is not None:
+            entry["width_m"] = w_m
+        if l_m is not None:
+            entry["length_m"] = l_m
+        if obj.get("color"):
+            entry["color"] = str(obj["color"])
+        objects_out.append(entry)
 
     trajectories_out: List[Dict[str, Any]] = []
     if trajectories:
@@ -1059,7 +1155,10 @@ def export_scene_json(
     tracks_out: List[Dict[str, Any]] = []
     if tracks_registry:
         for tid, cname in tracks_registry.items():
-            tracks_out.append({"track_id": int(tid), "class_name": str(cname)})
+            entry_t: Dict[str, Any] = {"track_id": int(tid), "class_name": str(cname)}
+            if track_colors and tid in track_colors:
+                entry_t["color"] = str(track_colors[tid])
+            tracks_out.append(entry_t)
 
     frames_out: List[Dict[str, Any]] = []
     if frames_history:
@@ -1070,21 +1169,29 @@ def export_scene_json(
                 raw_z = float(o.get("z_m", 0.0))
                 sm_x = float(o.get("x_m_smoothed", raw_x))
                 sm_z = float(o.get("z_m_smoothed", raw_z))
-                frame_objs.append(
-                    {
-                        "track_id": int(o.get("track_id", -1)),
-                        "class_name": str(o.get("class_name", "")),
-                        "confidence": round(float(o.get("confidence", 0.0)), 3),
-                        "x_m": round(raw_x, 3),
-                        "z_m": round(raw_z, 3),
-                        "x_m_smoothed": round(sm_x, 3),
-                        "z_m_smoothed": round(sm_z, 3),
-                        "vx_m": round(float(o.get("vx_m", 0.0)), 4),
-                        "vz_m": round(float(o.get("vz_m", 0.0)), 4),
-                        "x_var": round(float(o.get("x_var", 0.0)), 6),
-                        "z_var": round(float(o.get("z_var", 0.0)), 6),
-                    }
-                )
+                fobj: Dict[str, Any] = {
+                    "track_id": int(o.get("track_id", -1)),
+                    "class_name": str(o.get("class_name", "")),
+                    "confidence": round(float(o.get("confidence", 0.0)), 3),
+                    "x_m": round(raw_x, 3),
+                    "z_m": round(raw_z, 3),
+                    "x_m_smoothed": round(sm_x, 3),
+                    "z_m_smoothed": round(sm_z, 3),
+                    "vx_m": round(float(o.get("vx_m", 0.0)), 4),
+                    "vz_m": round(float(o.get("vz_m", 0.0)), 4),
+                    "x_var": round(float(o.get("x_var", 0.0)), 6),
+                    "z_var": round(float(o.get("z_var", 0.0)), 6),
+                }
+                fw_m, fl_m = _bbox_dims_m(o.get("bbox_xyxy"))
+                if fw_m is not None:
+                    fobj["width_m"] = fw_m
+                if fl_m is not None:
+                    fobj["length_m"] = fl_m
+                # 트랙 다수결 색을 우선 적용해 프레임 간 깜빡임을 막는다.
+                color = (track_colors or {}).get(int(o.get("track_id", -1))) or o.get("color")
+                if color:
+                    fobj["color"] = str(color)
+                frame_objs.append(fobj)
             frames_out.append(
                 {
                     "frame_index": int(entry.get("frame_index", 0)),
@@ -1116,7 +1223,7 @@ def write_scene_json(
     primary_path: Path,
     cfg: Optional[PipelineConfig] = None,
 ) -> List[Path]:
-    """Write the scene JSON to ``primary_path`` and mirror to Unity StreamingAssets."""
+    """Write the scene JSON to ``primary_path`` and mirror to web/data for the viewer."""
     written: List[Path] = []
     primary_path.parent.mkdir(parents=True, exist_ok=True)
     with primary_path.open("w", encoding="utf-8") as f:
@@ -1124,21 +1231,21 @@ def write_scene_json(
     written.append(primary_path)
 
     cfg = cfg or PipelineConfig()
-    if cfg.unity_streaming_assets_dir:
+    if cfg.web_data_dir:
         # Resolve relative path against this file's repo root so it works
         # regardless of the caller's CWD.
         repo_root = Path(__file__).resolve().parent
-        unity_dir = Path(cfg.unity_streaming_assets_dir)
-        if not unity_dir.is_absolute():
-            unity_dir = repo_root / unity_dir
+        web_dir = Path(cfg.web_data_dir)
+        if not web_dir.is_absolute():
+            web_dir = repo_root / web_dir
         try:
-            unity_dir.mkdir(parents=True, exist_ok=True)
-            unity_path = unity_dir / cfg.unity_scene_filename
-            with unity_path.open("w", encoding="utf-8") as f:
+            web_dir.mkdir(parents=True, exist_ok=True)
+            web_path = web_dir / cfg.web_scene_filename
+            with web_path.open("w", encoding="utf-8") as f:
                 json.dump(scene, f, ensure_ascii=False)
-            written.append(unity_path)
+            written.append(web_path)
         except OSError:
-            # Unity 프로젝트가 없을 수도 있으므로 mirror 실패는 치명적이지 않음
+            # web/ 디렉토리가 없을 수도 있으므로 mirror 실패는 치명적이지 않음
             pass
     return written
 
@@ -1147,7 +1254,20 @@ class RoadSceneProjector:
     def __init__(self, config: Optional[PipelineConfig] = None):
         self.config = config or PipelineConfig()
         self.device = _resolve_device(self.config.device)
-        self.road_model = YOLO(self.config.road_model_path)
+
+        # 도로 백엔드 선택: YOLO-seg(기본) 또는 SMP U-Net.
+        # U-Net 의존성(segmentation_models_pytorch)은 "unet" 일 때만 지연 로드한다.
+        self._use_road_unet = self.config.road_detector_type == "unet"
+        if self._use_road_unet:
+            from smp_road.model import load_checkpoint  # lazy import
+            self._road_torch_device = _perspective_torch_device(self.device)
+            self.road_model, _ = load_checkpoint(
+                self.config.road_unet_model_path, device=self._road_torch_device
+            )
+        else:
+            self._road_torch_device = None
+            self.road_model = YOLO(self.config.road_model_path)
+
         self.crosswalk_model = YOLO(self.config.crosswalk_model_path)
         self.perspective_model = _load_perspective_model(self.config.perspective_version, self.device)
 
@@ -1163,20 +1283,36 @@ class RoadSceneProjector:
             self.object_model = YOLO(self.config.object_model_path)
             self._sv_tracker = None
 
-    def run(self, image_path: str, save_dir: Optional[str] = None) -> Dict[str, Any]:
-        image_bgr = cv2.imread(image_path)
-        if image_bgr is None:
-            raise FileNotFoundError(f"Failed to read image: {image_path}")
-
-        if self.config.use_clahe:
-            image_bgr = _apply_clahe(image_bgr)
-
-        road_out = infer_road_model(
+    def _infer_road(self, image_bgr: np.ndarray) -> Dict[str, Any]:
+        """도로 백엔드 추상화: YOLO-seg / U-Net 어느 쪽이든 {'road_polygons_uv': [...]} 반환."""
+        if self._use_road_unet:
+            from smp_road.model import infer_road_polygons  # lazy import
+            return infer_road_polygons(
+                self.road_model,
+                image_bgr,
+                imgsz=self.config.road_unet_imgsz,
+                threshold=self.config.road_unet_threshold,
+                min_area=self.config.road_unet_min_area,
+                device=self._road_torch_device,
+            )
+        return infer_road_model(
             image_bgr=image_bgr,
             model=self.road_model,
             conf=self.config.road_conf,
             device=self.device,
         )
+
+    def run(self, image_path: str, save_dir: Optional[str] = None) -> Dict[str, Any]:
+        image_bgr = cv2.imread(image_path)
+        if image_bgr is None:
+            raise FileNotFoundError(f"Failed to read image: {image_path}")
+
+        # 색 분류는 CLAHE(명도 평활화) 이전의 원본 색을 써야 정확하다.
+        color_src = image_bgr
+        if self.config.use_clahe:
+            image_bgr = _apply_clahe(image_bgr)
+
+        road_out = self._infer_road(image_bgr)
         crosswalk_out = infer_crosswalk_model(
             image_bgr=image_bgr,
             model=self.crosswalk_model,
@@ -1189,6 +1325,7 @@ class RoadSceneProjector:
                 model=self.object_model,
                 conf=self.config.object_conf,
                 class_names=OBJECT_CLASS_NAMES,
+                color_image_bgr=color_src,
             )
         else:
             obj_out = infer_object_model(
@@ -1196,6 +1333,7 @@ class RoadSceneProjector:
                 model=self.object_model,
                 conf=self.config.object_conf,
                 device=self.device,
+                color_image_bgr=color_src,
             )
 
         camera = estimate_camera_params(image_bgr, self.perspective_model)
@@ -1261,6 +1399,7 @@ class RoadSceneProjector:
         crosswalk_polygons_uv: List[np.ndarray],
         camera: Dict[str, float],
         tracker: BEVObjectTracker,
+        color_image_bgr: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]], List[Dict[str, Any]], Dict[int, List[Tuple[int, int]]]]:
         if self._use_rfdetr:
             obj_out = infer_object_model_rfdetr(
@@ -1269,6 +1408,7 @@ class RoadSceneProjector:
                 conf=self.config.object_conf,
                 class_names=OBJECT_CLASS_NAMES,
                 sv_tracker=self._sv_tracker,
+                color_image_bgr=color_image_bgr,
             )
         else:
             obj_out = infer_object_model(
@@ -1277,6 +1417,7 @@ class RoadSceneProjector:
                 conf=self.config.object_conf,
                 device=self.device,
                 use_tracker=True,
+                color_image_bgr=color_image_bgr,
             )
         projected = _project_objects_to_bev(obj_out["detections"], camera, self.config)
         tracked_objects, trajectories = tracker.update(projected)
@@ -1320,16 +1461,13 @@ class RoadSceneProjector:
             cap.release()
             raise RuntimeError(f"Video has no readable frame: {video_path}")
 
+        # 색 분류용 원본(첫 프레임)을 CLAHE 적용 전에 보관한다.
+        first_frame_color = first_frame
         if self.config.use_clahe:
             first_frame = _apply_clahe(first_frame)
 
         # Road model is intentionally run once for static-camera video.
-        road_out = infer_road_model(
-            image_bgr=first_frame,
-            model=self.road_model,
-            conf=self.config.road_conf,
-            device=self.device,
-        )
+        road_out = self._infer_road(first_frame)
         road_polygons_uv = road_out["road_polygons_uv"]
         crosswalk_out = infer_crosswalk_model(
             image_bgr=first_frame,
@@ -1372,10 +1510,12 @@ class RoadSceneProjector:
         while True:
             if frame_idx == 0:
                 frame = first_frame
+                frame_color = first_frame_color
             else:
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     break
+                frame_color = frame
                 if self.config.use_clahe:
                     frame = _apply_clahe(frame)
 
@@ -1388,6 +1528,7 @@ class RoadSceneProjector:
                 crosswalk_polygons_uv=crosswalk_polygons_uv,
                 camera=camera,
                 tracker=tracker,
+                color_image_bgr=frame_color,
             )
 
             bev_resized = cv2.resize(bev, (frame_w, frame_h), interpolation=cv2.INTER_LINEAR)
@@ -1418,18 +1559,23 @@ class RoadSceneProjector:
                 cls = str(o.get("class_name", ""))
                 tracks_registry.setdefault(int(tid), cls)
                 cov = o.get("world_cov") or [0.0, 0.0, 0.0]
-                frame_objs.append(
-                    {
-                        "track_id": int(tid),
-                        "class_name": cls,
-                        "confidence": float(o.get("confidence", 0.0)),
-                        "x_m": float(wp[0]),
-                        "z_m": float(wp[1]),
-                        "cov_xx": float(cov[0]),
-                        "cov_xz": float(cov[1]),
-                        "cov_zz": float(cov[2]),
-                    }
-                )
+                fobj: Dict[str, Any] = {
+                    "track_id": int(tid),
+                    "class_name": cls,
+                    "confidence": float(o.get("confidence", 0.0)),
+                    "x_m": float(wp[0]),
+                    "z_m": float(wp[1]),
+                    "cov_xx": float(cov[0]),
+                    "cov_xz": float(cov[1]),
+                    "cov_zz": float(cov[2]),
+                }
+                bbox = o.get("bbox_xyxy")
+                if bbox is not None:
+                    fobj["bbox_xyxy"] = [float(v) for v in bbox]
+                color = o.get("color")
+                if color:
+                    fobj["color"] = color
+                frame_objs.append(fobj)
             frames_history.append({"frame_index": frame_idx, "objects": frame_objs})
 
             frame_idx += 1
@@ -1478,6 +1624,19 @@ class RoadSceneProjector:
                     o["x_var"] = sm["x_var"]
                     o["z_var"] = sm["z_var"]
 
+        # 트랙별 색을 다수결로 확정한다 (프레임마다 흔들리지 않도록).
+        color_votes: Dict[int, Counter] = {}
+        for entry in frames_history:
+            for o in entry.get("objects", []):
+                color = o.get("color")
+                if not color:
+                    continue
+                tid = int(o.get("track_id", -1))
+                if tid < 0:
+                    continue
+                color_votes.setdefault(tid, Counter())[color] += 1
+        track_colors = {tid: votes.most_common(1)[0][0] for tid, votes in color_votes.items()}
+
         scene_data = export_scene_json(
             camera=camera,
             road_polygons_uv=road_polygons_uv,
@@ -1488,6 +1647,7 @@ class RoadSceneProjector:
             frame_index=max(0, frame_idx - 1),
             frames_history=frames_history,
             tracks_registry=tracks_registry,
+            track_colors=track_colors,
             fps=fps,
         )
         scene_path = save_root / f"{stem}_scene.json"

@@ -17,7 +17,32 @@
       "Bash(xargs grep -l \"conf\\\\|threshold\\\\|NMS\\\\|augment\")",
       "PowerShell(Get-ChildItem *)",
       "PowerShell(head *)",
-      "PowerShell(Get-Content *)"
+      "PowerShell(Get-Content *)",
+      "Bash(/c/ProgramData/anaconda3/python.exe -m http.server 8000 --bind 127.0.0.1)",
+      "PowerShell($c = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue; if \\($c\\) { $c | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; \"stopped PID $_\" } catch {} } } else { \"no listener on 8000\" })",
+      "PowerShell($node = \\(Get-Command node -ErrorAction SilentlyContinue\\); if \\($node\\) { \"node: $\\($node.Source\\)\" } else { \"no node\" })",
+      "Bash(curl -s http://localhost:8765/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:8765/web/index.html)",
+      "Bash(pkill -f \"http.server 8765\")",
+      "Bash(mkdir -p web/assets)",
+      "Bash(cp \"/Users/jaehyun/Documents/Resources/GameAssets/3d/CarModels/lowpoly_cars_free/GLTF/coupe.glb\" web/assets/coupe.glb)",
+      "Bash(curl -s -o /dev/null -w \"index:%{http_code} \" http://localhost:8123/)",
+      "Bash(curl -s -o /dev/null -w \"glb:%{http_code} \" http://localhost:8123/assets/coupe.glb)",
+      "Bash(curl -s -o /dev/null -w \"scene:%{http_code}\\\\n\" http://localhost:8123/data/scene_data.json)",
+      "Bash(xargs kill)",
+      "PowerShell(cmd /c \"aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin 351998451865.dkr.ecr.ap-northeast-2.amazonaws.com\")",
+      "PowerShell($AWS_REGION = \"ap-northeast-2\")",
+      "PowerShell(aws iam get-role *)",
+      "PowerShell(aws iam attach-role-policy *)",
+      "Bash(git remote *)",
+      "Skill(run)",
+      "Bash(curl -s http://localhost:8765/styles.css)",
+      "Bash(curl -s http://localhost:8765/main.js)",
+      "Bash(chromium-cli *)",
+      "Bash(pkill -f \"python -m http.server 8765\")",
+      "Skill(claude-in-chrome)",
+      "Bash(node --input-type=module)",
+      "Bash(node -e ' *)"
     ]
   }
 }

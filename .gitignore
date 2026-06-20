@@ -63,6 +63,9 @@ predictions/
 # Optional local input/output dirs
 test_images/
 
+# Server upload scratch dir (server.py saves incoming media here)
+uploads/
+
 # Model artifacts (keep project base model)
 *.ckpt
 *.onnx
@@ -83,6 +86,7 @@ cctv-road-dataset/
 cctv-roadseg-dataset/
 cctv-crosswalk-dataset/
 cctv-object-dataset-coco/
+cctv-object-dataset-aihub/
 PerspectiveFields/
 rf-detr-large-2026.pth
 rf-detr-nano.pth
