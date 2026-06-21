@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sys
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -15,9 +15,25 @@ from ultralytics import YOLO
 
 
 DEFAULT_ROAD_MODEL_PATH = "runs/segment/0401-road/weights/best.pt"
+DEFAULT_ROAD_UNET_MODEL_PATH = "runs/smp-road/best.pt"
 DEFAULT_CROSSWALK_MODEL_PATH = "runs/segment/0406-crosswalk/weights/best.pt"
-DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0401-object/weights/best.pt"
+DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0619-object/weights/best.pt"
+
+
+DEFAULT_RFDETR_OBJECT_MODEL_PATH = "runs/detect/rfdetr-object-0519/best_checkpoint.pth"
+
+
 DEFAULT_PERSPECTIVE_VERSION = "Paramnet-360Cities-edina-centered"
+
+
+def _onnx_path(pt_path: str, override: str = "") -> str:
+    """`.pt`/`.pth` 경로에서 `.onnx` 경로를 유도한다. override가 있으면 그대로 반환."""
+    if override:
+        return override
+    return str(Path(pt_path).with_suffix(".onnx"))
+
+# cctv-object-dataset/data.yaml names 순서와 동일하게 유지
+OBJECT_CLASS_NAMES: List[str] = ["bus", "car", "person", "riders", "truck"]
 
 
 @dataclass
@@ -25,9 +41,19 @@ class PipelineConfig:
     road_model_path: str = DEFAULT_ROAD_MODEL_PATH
     crosswalk_model_path: str = DEFAULT_CROSSWALK_MODEL_PATH
     object_model_path: str = DEFAULT_OBJECT_MODEL_PATH
+    # 도로 segmentation 백엔드: "yolo"(YOLO-seg) | "unet"(SMP U-Net)
+    # U-Net 비교/통합은 docs/unet_vs_yolo_roadseg.md 참고
+    road_detector_type: str = "unet"
+    road_unet_model_path: str = DEFAULT_ROAD_UNET_MODEL_PATH
+    road_unet_imgsz: int = 512
+    road_unet_threshold: float = 0.5
+    road_unet_min_area: int = 1500  # 이보다 작은 도로 마스크 조각(노이즈)은 폐기
+    # "yolo" | "rfdetr"
+    object_detector_type: str = "rfdetr"
+    rfdetr_object_model_path: str = DEFAULT_RFDETR_OBJECT_MODEL_PATH
     perspective_version: str = DEFAULT_PERSPECTIVE_VERSION
     road_conf: float = 0.25
-    object_conf: float = 0.15
+    object_conf: float = 0.1
     crosswalk_conf: float = 0.15
     camera_height_m: float = 6.5
     pixels_per_meter: float = 42.0
@@ -37,11 +63,20 @@ class PipelineConfig:
     track_max_distance_m: float = 3.0
     track_max_missed_frames: int = 10
     trajectory_max_length: int = 60
+    track_world_nms_distance_m: float = 0.8
+    track_reid_distance_m: float = 2.0
+    track_reid_max_missed_frames: int = 8
     video_recompute_camera_each_frame: bool = False
+    use_clahe: bool = True
     device: Optional[Any] = None
-    # Unity 연동: scene JSON을 StreamingAssets로 미러링하여 Unity SceneLoader가 바로 로드
-    unity_streaming_assets_dir: Optional[str] = "Road3dReconstruction/Assets/StreamingAssets"
-    unity_scene_filename: str = "scene_data.json"
+    # 웹 뷰어 연동: scene JSON을 web/data로 미러링하여 three.js 뷰어가 바로 로드
+    web_data_dir: Optional[str] = "web/data"
+    web_scene_filename: str = "scene_data.json"
+    # ONNX Runtime 가속: True면 U-Net/YOLO crosswalk 모델을 .onnx로 로드 (CPU 1.5-2.5x 향상)
+    use_onnx: bool = False
+    crosswalk_onnx_model_path: str = ""  # 비면 crosswalk_model_path에서 .onnx로 자동 유도
+    road_unet_onnx_model_path: str = ""  # 비면 road_unet_model_path에서 .onnx로 자동 유도
+    object_onnx_model_path: str = ""     # 비면 object_model_path에서 .onnx로 자동 유도
 
 
 def _resolve_device(device: Optional[Any]) -> Any:
@@ -95,6 +130,15 @@ def _load_perspective_model(version: str, device: Any):
     return pf_model
 
 
+def _apply_clahe(image_bgr: np.ndarray, clip_limit: float = 2.0, tile_size: int = 8) -> np.ndarray:
+    """야간·역광 CCTV 영상의 명도 불균일을 보정한다 (CLAHE on L channel)."""
+    lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
+    l = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+
+
 def _extract_road_polygons(result: Any) -> List[np.ndarray]:
     polygons: List[np.ndarray] = []
     if result is None or result.masks is None or result.masks.xy is None:
@@ -115,14 +159,133 @@ def _extract_crosswalk_polygons(result: Any) -> List[np.ndarray]:
         polygons.append(np.asarray(poly, dtype=np.float32))
     return polygons
 
-def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
+def _footpoint_from_mask_robust(
+    contour: Optional[np.ndarray],
+    mask_raster: Optional[np.ndarray],
+    bbox_xyxy: Tuple[float, float, float, float],
+) -> Tuple[float, float]:
+    """Estimate the ground contact point of a vehicle mask with sub-pixel precision.
+
+    Picking a single argmax(y) pixel makes the footpoint twitchy because mask edges
+    fluctuate by 1-3 px between frames. Instead, sample the bottom rows of the mask,
+    take the median x per row, then fit a 2nd-order polynomial x(y) and return the
+    point at the deepest y. Falls back gracefully when the mask is too thin or
+    missing.
+    """
+    x1, y1, x2, y2 = bbox_xyxy
+    bbox_h = max(1.0, float(y2 - y1))
+    k = int(np.clip(round(bbox_h * 0.08), 3, 12))
+
+    fallback_x = (x1 + x2) * 0.5
+    fallback_y = y2
+
+    if mask_raster is not None and mask_raster.size > 0:
+        rows_with_pixels = np.flatnonzero(mask_raster.any(axis=1))
+        if rows_with_pixels.size == 0:
+            return float(fallback_x), float(fallback_y)
+        y_bot = int(rows_with_pixels[-1])
+        y_lo = max(0, y_bot - k + 1)
+        ys: List[float] = []
+        xs: List[float] = []
+        for y in range(y_lo, y_bot + 1):
+            row = mask_raster[y]
+            xs_active = np.flatnonzero(row)
+            if xs_active.size == 0:
+                continue
+            ys.append(float(y))
+            xs.append(float(np.median(xs_active)))
+        if len(ys) >= 3:
+            ys_arr = np.asarray(ys, dtype=np.float64)
+            xs_arr = np.asarray(xs, dtype=np.float64)
+            try:
+                a, b, c = np.polyfit(ys_arr, xs_arr, 2)
+                y_star = float(ys_arr.max())
+                x_star = float(a * y_star * y_star + b * y_star + c)
+                return x_star, y_star
+            except (np.linalg.LinAlgError, ValueError):
+                pass
+        if len(ys) >= 1:
+            return float(xs[-1]), float(ys[-1])
+        return float(fallback_x), float(fallback_y)
+
+    if contour is not None and contour.size > 0:
+        cy = contour[:, 1]
+        y_bot = float(cy.max())
+        band = contour[cy >= y_bot - max(2.0, bbox_h * 0.05)]
+        if band.shape[0] >= 3:
+            ys_arr = band[:, 1].astype(np.float64)
+            xs_arr = band[:, 0].astype(np.float64)
+            try:
+                a, b, c = np.polyfit(ys_arr, xs_arr, 2)
+                y_star = float(ys_arr.max())
+                x_star = float(a * y_star * y_star + b * y_star + c)
+                return x_star, y_star
+            except (np.linalg.LinAlgError, ValueError):
+                pass
+        return float(np.median(band[:, 0])), float(y_bot)
+
+    return float(fallback_x), float(fallback_y)
+
+
+# 차량을 'white' / 'black'으로 가르는 명도(median luma, 0-255) 임계값. CCTV 크롭 기준.
+CAR_COLOR_BRIGHTNESS_THRESH = 95.0
+
+
+def _estimate_car_color(
+    image_bgr: Optional[np.ndarray],
+    raster: Optional[np.ndarray],
+    bbox: Tuple[float, float, float, float],
+) -> Optional[str]:
+    """차량 픽셀의 명도로 'white' / 'black'을 분류한다.
+
+    가능하면 segmentation 마스크 안쪽 픽셀을 쓰고, 마스크가 없으면 도로/배경이
+    덜 섞이도록 bbox 중앙 영역을 사용한다. 판단 불가 시 None.
+    명도는 창문·그림자에 흔들리지 않도록 luma의 median을 쓴다.
+    """
+    if image_bgr is None or image_bgr.size == 0:
+        return None
+    h, w = image_bgr.shape[:2]
+    x1, y1, x2, y2 = (int(round(v)) for v in bbox)
+    x1 = max(0, min(w - 1, x1))
+    y1 = max(0, min(h - 1, y1))
+    x2 = max(x1 + 1, min(w, x2))
+    y2 = max(y1 + 1, min(h, y2))
+
+    pixels: Optional[np.ndarray] = None
+    if raster is not None and raster.shape[:2] == (h, w):
+        sub_mask = raster[y1:y2, x1:x2].astype(bool)
+        if int(sub_mask.sum()) >= 25:
+            pixels = image_bgr[y1:y2, x1:x2][sub_mask]
+    if pixels is None:
+        bw, bh = x2 - x1, y2 - y1
+        cx1, cx2 = x1 + int(bw * 0.25), x2 - int(bw * 0.25)
+        cy1, cy2 = y1 + int(bh * 0.25), y2 - int(bh * 0.25)
+        if cx2 <= cx1 or cy2 <= cy1:
+            cx1, cy1, cx2, cy2 = x1, y1, x2, y2
+        pixels = image_bgr[cy1:cy2, cx1:cx2].reshape(-1, 3)
+    if pixels.size == 0:
+        return None
+
+    luma = 0.114 * pixels[:, 0] + 0.587 * pixels[:, 1] + 0.299 * pixels[:, 2]
+    return "white" if float(np.median(luma)) >= CAR_COLOR_BRIGHTNESS_THRESH else "black"
+
+
+def _extract_object_detections(
+    result: Any,
+    color_image_bgr: Optional[np.ndarray] = None,
+) -> List[Dict[str, Any]]:
     detections: List[Dict[str, Any]] = []
     if result is None or result.boxes is None:
         return detections
 
     names = result.names if hasattr(result, "names") else {}
     masks_xy = result.masks.xy if result.masks is not None else None
+    masks_data = result.masks.data if result.masks is not None else None
     track_ids = result.boxes.id  # None when using predict(), Tensor when using track()
+
+    img_h, img_w = (None, None)
+    if hasattr(result, "orig_shape") and result.orig_shape is not None:
+        img_h, img_w = int(result.orig_shape[0]), int(result.orig_shape[1])
 
     for i, box in enumerate(result.boxes):
         x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -133,28 +296,41 @@ def _extract_object_detections(result: Any) -> List[Dict[str, Any]]:
         if class_name == "attention" or class_name == "crosswalk":
             continue
 
-        foot_x = (x1 + x2) * 0.5
-        foot_y = y2
+        contour_i: Optional[np.ndarray] = None
         if masks_xy is not None and i < len(masks_xy):
-            contour = np.asarray(masks_xy[i], dtype=np.float32)
-            if contour.size > 0:
-                lowest_idx = int(np.argmax(contour[:, 1]))
-                foot_x = float(contour[lowest_idx, 0])
-                foot_y = float(contour[lowest_idx, 1])
+            contour_i = np.asarray(masks_xy[i], dtype=np.float32)
+
+        raster_i: Optional[np.ndarray] = None
+        if masks_data is not None and i < len(masks_data):
+            mask_tensor = masks_data[i]
+            if hasattr(mask_tensor, "cpu"):
+                raster_i = mask_tensor.detach().cpu().numpy()
+            else:
+                raster_i = np.asarray(mask_tensor)
+            raster_i = (raster_i > 0.5).astype(np.uint8)
+            if img_h is not None and img_w is not None:
+                if raster_i.shape != (img_h, img_w):
+                    raster_i = cv2.resize(raster_i, (img_w, img_h), interpolation=cv2.INTER_NEAREST)
+
+        foot_x, foot_y = _footpoint_from_mask_robust(contour_i, raster_i, (x1, y1, x2, y2))
 
         track_id = int(track_ids[i].item()) if track_ids is not None else None
 
-        detections.append(
-            {
-                "detection_id": i,
-                "class_id": cls_id,
-                "class_name": class_name,
-                "confidence": conf,
-                "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
-                "footpoint_uv": [float(foot_x), float(foot_y)],
-                "track_id": track_id,
-            }
-        )
+        det: Dict[str, Any] = {
+            "detection_id": i,
+            "class_id": cls_id,
+            "class_name": class_name,
+            "confidence": conf,
+            "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
+            "footpoint_uv": [float(foot_x), float(foot_y)],
+            "track_id": track_id,
+        }
+        # 색 분류는 'car'에만 적용한다 (요청 범위).
+        if class_name == "car" and color_image_bgr is not None:
+            color = _estimate_car_color(color_image_bgr, raster_i, (x1, y1, x2, y2))
+            if color is not None:
+                det["color"] = color
+        detections.append(det)
     return detections
 
 
@@ -203,6 +379,7 @@ def infer_object_model(
     conf: float,
     device: Any,
     use_tracker: bool = False,
+    color_image_bgr: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     common_kwargs = dict(source=image_bgr, save=False, conf=conf, device=device, verbose=False)
     if use_tracker:
@@ -212,7 +389,112 @@ def infer_object_model(
     result = results[0] if results else None
     return {
         "raw_result": result,
-        "detections": _extract_object_detections(result),
+        "detections": _extract_object_detections(result, color_image_bgr=color_image_bgr),
+    }
+
+
+def _get_rfdetr_class_names(model: Any) -> List[str]:
+    """로드된 RF-DETR 모델에서 클래스 이름 목록을 추출한다.
+
+    체크포인트에 내장된 class_names를 우선 사용하고, 없으면 OBJECT_CLASS_NAMES로 폴백.
+    """
+    for getter in (
+        lambda m: m.model.class_names,
+        lambda m: m.class_names,
+        lambda m: m.model.model.class_names,
+    ):
+        try:
+            names = getter(model)
+            if names:
+                return list(names)
+        except Exception:
+            pass
+    return list(OBJECT_CLASS_NAMES)
+
+
+def _load_rfdetr_model(model_path: str) -> Tuple[Any, List[str]]:
+    try:
+        from rfdetr import RFDETRLarge  # type: ignore
+    except ImportError as _e:
+        raise ImportError(
+            f"rfdetr import 실패: {_e}  (pip install rfdetr supervision 으로 설치하세요)"
+        ) from _e
+    model = RFDETRLarge(pretrain_weights=model_path)
+    class_names = _get_rfdetr_class_names(model)
+    return model, class_names
+
+
+def _extract_rfdetr_detections(
+    detections: Any,
+    class_names: List[str],
+    color_image_bgr: Optional[np.ndarray] = None,
+) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    if detections is None or len(detections) == 0:
+        return results
+
+    xyxy = detections.xyxy          # (N, 4) numpy
+    confs = detections.confidence   # (N,)
+    cls_ids = detections.class_id   # (N,)
+    track_ids = getattr(detections, "tracker_id", None)
+
+    for i in range(len(xyxy)):
+        x1, y1, x2, y2 = float(xyxy[i][0]), float(xyxy[i][1]), float(xyxy[i][2]), float(xyxy[i][3])
+        cls_id = int(cls_ids[i])
+        conf = float(confs[i])
+        class_name = class_names[cls_id] if cls_id < len(class_names) else str(cls_id)
+
+        if class_name in ("attention", "crosswalk"):
+            continue
+
+        # 마스크 없음 → bbox 하단 중앙을 footpoint로 사용
+        foot_x = (x1 + x2) * 0.5
+        foot_y = y2
+
+        track_id = int(track_ids[i]) if track_ids is not None else None
+
+        det: Dict[str, Any] = {
+            "detection_id": i,
+            "class_id": cls_id,
+            "class_name": class_name,
+            "confidence": conf,
+            "bbox_xyxy": [x1, y1, x2, y2],
+            "footpoint_uv": [foot_x, foot_y],
+            "track_id": track_id,
+        }
+        # RF-DETR는 마스크가 없어 bbox 기반으로 'car' 색을 분류한다.
+        if class_name == "car" and color_image_bgr is not None:
+            color = _estimate_car_color(color_image_bgr, None, (x1, y1, x2, y2))
+            if color is not None:
+                det["color"] = color
+        results.append(det)
+    return results
+
+
+def infer_object_model_rfdetr(
+    image_bgr: np.ndarray,
+    model: Any,
+    conf: float,
+    class_names: List[str],
+    sv_tracker: Optional[Any] = None,
+    color_image_bgr: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    """RF-DETR 모델로 객체를 탐지하고 (선택적으로) supervision ByteTrack으로 추적한다."""
+    import PIL.Image  # type: ignore
+
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    image_pil = PIL.Image.fromarray(image_rgb)
+
+    detections = model.predict(image_pil, threshold=conf)
+
+    if sv_tracker is not None:
+        detections = sv_tracker.update_with_detections(detections)
+
+    return {
+        "raw_result": detections,
+        "detections": _extract_rfdetr_detections(
+            detections, class_names, color_image_bgr=color_image_bgr
+        ),
     }
 
 
@@ -301,6 +583,86 @@ def project_uv_to_ground(
     return x_m, z_m
 
 
+def project_uv_to_ground_with_cov(
+    u: float,
+    v: float,
+    camera: Dict[str, float],
+    camera_height_m: float,
+    sigma_uv_px: float = 1.5,
+    ray_y_min: float = 0.05,
+) -> Optional[Tuple[float, float, float, float, float]]:
+    """Project a pixel to the ground plane and propagate UV noise to (x, z) covariance.
+
+    Returns (x_m, z_m, cov_xx, cov_xz, cov_zz). Returns None when the ray points too
+    close to horizontal (ground projection is then very unstable; clamp via ray_y_min).
+    """
+    focal = camera["focal_px"]
+    if focal <= 1e-6:
+        return None
+    if sigma_uv_px <= 0.0:
+        sigma_uv_px = 1.0
+
+    cx = camera["cx"]
+    cy = camera["cy"]
+    roll_rad = math.radians(camera["roll_deg"])
+    pitch_rad = math.radians(camera["pitch_deg"])
+
+    x_norm = (u - cx) / focal
+    y_norm = (v - cy) / focal
+    ray = _camera_ray_to_world(x_norm, y_norm, roll_rad, pitch_rad)
+
+    ry = float(ray[1])
+    if ry < ray_y_min:
+        return None
+
+    t = camera_height_m / ry
+    if t <= 0:
+        return None
+
+    x_m = float(t * ray[0])
+    z_m = float(t * ray[2])
+    if not (math.isfinite(x_m) and math.isfinite(z_m)):
+        return None
+    if z_m <= 0:
+        return None
+
+    # Jacobian of (x_m, z_m) w.r.t. (u, v):
+    #   ray = R(x_norm, y_norm), with x_norm = (u-cx)/f, y_norm = (v-cy)/f
+    #   x_m = camera_height * ray_x / ray_y
+    #   z_m = camera_height * ray_z / ray_y
+    cr, sr = math.cos(roll_rad), math.sin(roll_rad)
+    cp, sp = math.cos(pitch_rad), math.sin(pitch_rad)
+
+    # dray/dx_norm and dray/dy_norm (from _camera_ray_to_world)
+    drx_dxn, drx_dyn = cr, -sr
+    dry_dxn, dry_dyn = cp * sr, cp * cr
+    drz_dxn, drz_dyn = sp * sr, sp * cr
+
+    inv_f = 1.0 / focal
+    h = float(camera_height_m)
+    rx, rz = float(ray[0]), float(ray[2])
+
+    # d(x_m)/dray_x = h/ry, d(x_m)/dray_y = -h*rx/ry^2
+    dxm_drx = h / ry
+    dxm_dry = -h * rx / (ry * ry)
+    dzm_drx = 0.0
+    dzm_drz = h / ry
+    dzm_dry = -h * rz / (ry * ry)
+
+    # Chain to (x_norm, y_norm) then to (u, v) via inv_f.
+    dxm_du = (dxm_drx * drx_dxn + dxm_dry * dry_dxn) * inv_f
+    dxm_dv = (dxm_drx * drx_dyn + dxm_dry * dry_dyn) * inv_f
+    dzm_du = (dzm_drx * drx_dxn + dzm_drz * drz_dxn + dzm_dry * dry_dxn) * inv_f
+    dzm_dv = (dzm_drx * drx_dyn + dzm_drz * drz_dyn + dzm_dry * dry_dyn) * inv_f
+
+    s2 = float(sigma_uv_px) * float(sigma_uv_px)
+    cov_xx = s2 * (dxm_du * dxm_du + dxm_dv * dxm_dv)
+    cov_zz = s2 * (dzm_du * dzm_du + dzm_dv * dzm_dv)
+    cov_xz = s2 * (dxm_du * dzm_du + dxm_dv * dzm_dv)
+
+    return x_m, z_m, float(cov_xx), float(cov_xz), float(cov_zz)
+
+
 def world_to_bev(
     x_m: float,
     z_m: float,
@@ -377,15 +739,18 @@ def _project_objects_to_bev(
     projected: List[Dict[str, Any]] = []
     for det in detections:
         foot_u, foot_v = det["footpoint_uv"]
-        proj = project_uv_to_ground(float(foot_u), float(foot_v), camera, cfg.camera_height_m)
+        proj = project_uv_to_ground_with_cov(
+            float(foot_u), float(foot_v), camera, cfg.camera_height_m
+        )
         if proj is None:
             continue
 
-        x_m, z_m = proj
+        x_m, z_m, cxx, cxz, czz = proj
         x_px, y_px = world_to_bev(x_m, z_m, cfg.bev_width, cfg.bev_height, cfg.pixels_per_meter)
 
         item = dict(det)
         item["world_position_m"] = [x_m, z_m]
+        item["world_cov"] = [cxx, cxz, czz]
         item["bev_xy"] = [x_px, y_px]
         projected.append(item)
     return projected
@@ -399,12 +764,43 @@ def _track_color(track_id: int) -> Tuple[int, int, int]:
     return int(b), int(g), int(r)
 
 
+def _suppress_duplicate_detections_world(
+    objects_bev: List[Dict[str, Any]],
+    min_distance_m: float,
+) -> List[Dict[str, Any]]:
+    """월드 좌표 NMS: 같은 클래스 탐지가 min_distance_m 이내에 겹칠 때 confidence 낮은 쪽 제거."""
+    if min_distance_m <= 0:
+        return objects_bev
+    sorted_objs = sorted(objects_bev, key=lambda o: float(o.get("confidence", 0.0)), reverse=True)
+    kept: List[Dict[str, Any]] = []
+    for obj in sorted_objs:
+        wp = obj.get("world_position_m")
+        cls = obj.get("class_name")
+        if wp is None:
+            kept.append(obj)
+            continue
+        duplicate = False
+        for kept_obj in kept:
+            kwp = kept_obj.get("world_position_m")
+            if kwp is None or kept_obj.get("class_name") != cls:
+                continue
+            if math.hypot(float(wp[0]) - float(kwp[0]), float(wp[1]) - float(kwp[1])) < min_distance_m:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(obj)
+    return kept
+
+
 class BEVObjectTracker:
-    """Accumulates BEV trajectories using track_ids supplied by ByteTrack (via YOLO.track)."""
+    """월드 공간 검증과 Re-ID를 포함한 BEV 궤적 추적기."""
 
     def __init__(self, cfg: PipelineConfig):
         self.max_missed_frames = cfg.track_max_missed_frames
         self.max_history = cfg.trajectory_max_length
+        self.max_distance_m = cfg.track_max_distance_m
+        self.reid_distance_m = cfg.track_reid_distance_m
+        self.reid_max_missed = cfg.track_reid_max_missed_frames
         self.tracks: Dict[int, Dict[str, Any]] = {}
 
     def _new_track(self, track_id: int, obj: Dict[str, Any]) -> None:
@@ -417,30 +813,85 @@ class BEVObjectTracker:
             "bev_xy": tuple(obj["bev_xy"]),
             "missed": 0,
             "history": history,
+            "vx": 0.0,
+            "vz": 0.0,
+            "age": 1,
         }
+
+    def _predict_position(self, track_id: int) -> np.ndarray:
+        """상수 속도 모델로 소멸 프레임 수만큼 위치를 예측한다."""
+        track = self.tracks[track_id]
+        missed = max(track["missed"], 0)
+        pos = track["world_position_m"].copy()
+        if missed > 0:
+            pos[0] += track["vx"] * missed
+            pos[1] += track["vz"] * missed
+        return pos
 
     def update(self, objects_bev: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[int, List[Tuple[int, int]]]]:
         seen_track_ids: set[int] = set()
-
         tracked_objects: List[Dict[str, Any]] = []
+
         for obj in objects_bev:
-            track_id = obj.get("track_id")
-            if track_id is None:
+            bytetrack_id = obj.get("track_id")
+            world_pos_raw = obj.get("world_position_m")
+            cls = obj.get("class_name", "")
+
+            if bytetrack_id is None:
                 tracked_objects.append(obj)
                 continue
 
-            seen_track_ids.add(track_id)
-            if track_id not in self.tracks:
-                self._new_track(track_id, obj)
+            world_pos: Optional[np.ndarray] = (
+                np.asarray(world_pos_raw, dtype=np.float32) if world_pos_raw is not None else None
+            )
+
+            # 기존에 알려진 트랙은 ByteTrack 결정을 그대로 신뢰한다.
+            if bytetrack_id in self.tracks:
+                assigned_id: int = bytetrack_id
             else:
-                track = self.tracks[track_id]
-                track["world_position_m"] = np.asarray(obj["world_position_m"], dtype=np.float32)
-                track["bev_xy"] = tuple(obj["bev_xy"])
+                # ByteTrack이 새 ID를 부여했을 때만 Re-ID 시도:
+                # 최근 소멸한 같은 클래스 트랙 중 예측 위치와 가장 가까운 것을 찾는다.
+                assigned_id = bytetrack_id
+                if world_pos is not None:
+                    best_dist = self.reid_distance_m
+                    for tid, track in self.tracks.items():
+                        if track["missed"] == 0:
+                            continue
+                        if track.get("class_name") != cls:
+                            continue
+                        pred_pos = self._predict_position(tid)
+                        dist = math.hypot(
+                            float(world_pos[0]) - float(pred_pos[0]),
+                            float(world_pos[1]) - float(pred_pos[1]),
+                        )
+                        if dist < best_dist:
+                            best_dist = dist
+                            assigned_id = tid
+
+            seen_track_ids.add(assigned_id)
+
+            if assigned_id not in self.tracks:
+                obj_for_new = dict(obj)
+                obj_for_new["track_id"] = assigned_id
+                self._new_track(assigned_id, obj_for_new)
+            else:
+                track = self.tracks[assigned_id]
+                if world_pos is not None:
+                    elapsed = max(1, track["missed"] + 1)
+                    alpha = min(1.0, 2.0 / (track["age"] + 1))
+                    raw_vx = float(world_pos[0] - track["world_position_m"][0]) / elapsed
+                    raw_vz = float(world_pos[1] - track["world_position_m"][1]) / elapsed
+                    track["vx"] = (1 - alpha) * track["vx"] + alpha * raw_vx
+                    track["vz"] = (1 - alpha) * track["vz"] + alpha * raw_vz
+                    track["world_position_m"] = world_pos
+                if obj.get("bev_xy") is not None:
+                    track["bev_xy"] = tuple(obj["bev_xy"])
+                    track["history"].append(tuple(obj["bev_xy"]))
                 track["missed"] = 0
-                track["history"].append(tuple(obj["bev_xy"]))
+                track["age"] += 1
 
             item = dict(obj)
-            item["track_id"] = track_id
+            item["track_id"] = assigned_id
             tracked_objects.append(item)
 
         to_delete: List[int] = []
@@ -448,17 +899,165 @@ class BEVObjectTracker:
             if track_id in seen_track_ids:
                 continue
             track["missed"] += 1
-            if track["missed"] > self.max_missed_frames:
+            # reid_max_missed 이후 완전 제거 (max_missed_frames는 시각화 기준으로 남김)
+            if track["missed"] > self.reid_max_missed:
                 to_delete.append(track_id)
         for track_id in to_delete:
             del self.tracks[track_id]
 
+        # 현재 프레임에서 활성(missed==0) 트랙의 궤적만 시각화용으로 반환
         trajectories = {
             track_id: list(track["history"])
             for track_id, track in self.tracks.items()
-            if len(track["history"]) >= 2
+            if track["missed"] == 0 and len(track["history"]) >= 2
         }
         return tracked_objects, trajectories
+
+
+def smooth_tracks_rts(
+    track_observations: Dict[int, List[Dict[str, Any]]],
+    fps: float,
+    q_pos: float = 0.5,
+    q_vel: float = 0.5,
+    r_floor: float = 1e-3,
+) -> Dict[int, Dict[int, Dict[str, float]]]:
+    """Forward-backward (RTS) smoothing of per-track BEV positions.
+
+    Each observation is a dict with keys: ``frame_index``, ``x_m``, ``z_m``,
+    and optional ``cov_xx``, ``cov_xz``, ``cov_zz``. Returns a nested mapping
+    ``{track_id: {frame_index: {x, z, vx, vz, x_var, z_var}}}`` with smoothed
+    state mean + marginal position variance.
+
+    State vector: [x, z, vx, vz]. Constant-velocity dynamics, white-noise jerk
+    process model. Q is integrated over dt between consecutive observations,
+    so gaps are handled naturally.
+    """
+    if fps is None or fps <= 1e-6:
+        fps = 30.0
+    base_dt = 1.0 / float(fps)
+    qp = float(q_pos)
+    qv = float(q_vel)
+    smoothed_out: Dict[int, Dict[int, Dict[str, float]]] = {}
+
+    for track_id, obs_list in track_observations.items():
+        if len(obs_list) == 0:
+            continue
+        obs_sorted = sorted(obs_list, key=lambda o: int(o["frame_index"]))
+        n = len(obs_sorted)
+
+        means: List[np.ndarray] = []
+        covs: List[np.ndarray] = []
+        Fs: List[np.ndarray] = []
+        Qs: List[np.ndarray] = []
+        priors_mean: List[np.ndarray] = []
+        priors_cov: List[np.ndarray] = []
+
+        first = obs_sorted[0]
+        x0 = float(first["x_m"])
+        z0 = float(first["z_m"])
+        rxx0 = max(float(first.get("cov_xx", 0.0)), r_floor)
+        rzz0 = max(float(first.get("cov_zz", 0.0)), r_floor)
+        # Initial state: position from measurement, velocity unknown.
+        m_post = np.array([x0, z0, 0.0, 0.0], dtype=np.float64)
+        P_post = np.diag([rxx0, rzz0, 25.0, 25.0])  # 5 m/s std velocity prior
+        means.append(m_post.copy())
+        covs.append(P_post.copy())
+
+        prev_frame = int(first["frame_index"])
+        for i in range(1, n):
+            obs = obs_sorted[i]
+            cur_frame = int(obs["frame_index"])
+            frames_gap = max(1, cur_frame - prev_frame)
+            dt = frames_gap * base_dt
+
+            F = np.array([
+                [1.0, 0.0, dt, 0.0],
+                [0.0, 1.0, 0.0, dt],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ])
+            # Discrete white-noise acceleration model along each axis (decoupled).
+            dt2 = dt * dt
+            dt3 = dt2 * dt
+            dt4 = dt2 * dt2
+            qx = np.array([
+                [dt4 / 4.0, dt3 / 2.0],
+                [dt3 / 2.0, dt2],
+            ]) * qp
+            qv_block = np.array([
+                [dt4 / 4.0, dt3 / 2.0],
+                [dt3 / 2.0, dt2],
+            ]) * qv
+            Q = np.zeros((4, 4))
+            Q[0:2, 0:2] = np.array([[qx[0, 0], 0.0], [0.0, qx[0, 0]]])
+            Q[0, 2] = qx[0, 1]
+            Q[2, 0] = qx[1, 0]
+            Q[1, 3] = qv_block[0, 1]
+            Q[3, 1] = qv_block[1, 0]
+            Q[2, 2] = qx[1, 1]
+            Q[3, 3] = qv_block[1, 1]
+
+            m_pred = F @ m_post
+            P_pred = F @ P_post @ F.T + Q
+
+            priors_mean.append(m_pred.copy())
+            priors_cov.append(P_pred.copy())
+            Fs.append(F.copy())
+            Qs.append(Q.copy())
+
+            cxx = max(float(obs.get("cov_xx", 0.0)), r_floor)
+            cxz = float(obs.get("cov_xz", 0.0))
+            czz = max(float(obs.get("cov_zz", 0.0)), r_floor)
+            R = np.array([[cxx, cxz], [cxz, czz]])
+            H = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+            z_meas = np.array([float(obs["x_m"]), float(obs["z_m"])])
+
+            y = z_meas - H @ m_pred
+            S = H @ P_pred @ H.T + R
+            try:
+                S_inv = np.linalg.inv(S)
+            except np.linalg.LinAlgError:
+                S_inv = np.linalg.pinv(S)
+            K = P_pred @ H.T @ S_inv
+
+            m_post = m_pred + K @ y
+            P_post = (np.eye(4) - K @ H) @ P_pred
+
+            means.append(m_post.copy())
+            covs.append(P_post.copy())
+            prev_frame = cur_frame
+
+        # RTS backward sweep.
+        sm_means = [m.copy() for m in means]
+        sm_covs = [P.copy() for P in covs]
+        for i in range(n - 2, -1, -1):
+            F_next = Fs[i]
+            P_pred_next = priors_cov[i]
+            m_pred_next = priors_mean[i]
+            try:
+                P_pred_inv = np.linalg.inv(P_pred_next)
+            except np.linalg.LinAlgError:
+                P_pred_inv = np.linalg.pinv(P_pred_next)
+            C = covs[i] @ F_next.T @ P_pred_inv
+            sm_means[i] = means[i] + C @ (sm_means[i + 1] - m_pred_next)
+            sm_covs[i] = covs[i] + C @ (sm_covs[i + 1] - P_pred_next) @ C.T
+
+        per_frame: Dict[int, Dict[str, float]] = {}
+        for i, obs in enumerate(obs_sorted):
+            fi = int(obs["frame_index"])
+            m = sm_means[i]
+            P = sm_covs[i]
+            per_frame[fi] = {
+                "x": float(m[0]),
+                "z": float(m[1]),
+                "vx": float(m[2]),
+                "vz": float(m[3]),
+                "x_var": float(max(P[0, 0], 0.0)),
+                "z_var": float(max(P[1, 1], 0.0)),
+            }
+        smoothed_out[int(track_id)] = per_frame
+
+    return smoothed_out
 
 
 def render_bev_scene(
@@ -595,14 +1194,15 @@ def export_scene_json(
     frame_index: int = 0,
     frames_history: Optional[List[Dict[str, Any]]] = None,
     tracks_registry: Optional[Dict[int, str]] = None,
+    track_colors: Optional[Dict[int, str]] = None,
     fps: float = 0.0,
 ) -> Dict[str, Any]:
-    """Build a Unity-friendly scene description in real-world (meter) coordinates.
+    """Build a web/three.js-friendly scene description in real-world (meter) coordinates.
 
-    Schema is shaped for `JsonUtility.FromJson<T>` consumption (no dictionaries).
-    All polygons are projected from UV to ground plane using the same homography
-    used for BEV rendering. Trajectory points stored in BEV pixel space are
-    inverse-projected back to world meters.
+    Emitted as plain JSON consumed by the three.js viewer (web/). All polygons are
+    projected from UV to ground plane using the same homography used for BEV
+    rendering. Trajectory points stored in BEV pixel space are inverse-projected
+    back to world meters.
     """
     cfg = cfg or PipelineConfig()
     cam_h = float(cfg.camera_height_m)
@@ -623,21 +1223,54 @@ def export_scene_json(
                 out.append({"points": pts})
         return out
 
+    def _bbox_dims_m(
+        bbox: Optional[List[float]],
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Project bbox bottom edge → width_m; top–bottom centres → length_m."""
+        if bbox is None:
+            return None, None
+        x1, y1, x2, y2 = bbox
+        left = project_uv_to_ground(x1, y2, camera, cam_h)
+        right = project_uv_to_ground(x2, y2, camera, cam_h)
+        w = None
+        if left is not None and right is not None:
+            w = round(math.hypot(right[0] - left[0], right[1] - left[1]), 3)
+        cx = (x1 + x2) * 0.5
+        top_g = project_uv_to_ground(cx, y1, camera, cam_h)
+        bot_g = project_uv_to_ground(cx, y2, camera, cam_h)
+        l = None
+        if top_g is not None and bot_g is not None:
+            l = round(math.hypot(top_g[0] - bot_g[0], top_g[1] - bot_g[1]), 3)
+        return w, l
+
     objects_out: List[Dict[str, Any]] = []
     for obj in projected_objects:
         wp = obj.get("world_position_m")
         if wp is None:
             continue
         track_id = obj.get("track_id")
-        objects_out.append(
-            {
-                "track_id": int(track_id) if track_id is not None else -1,
-                "class_name": str(obj.get("class_name", "")),
-                "confidence": round(float(obj.get("confidence", 0.0)), 3),
-                "x_m": round(float(wp[0]), 3),
-                "z_m": round(float(wp[1]), 3),
-            }
-        )
+        cov = obj.get("world_cov") or [0.0, 0.0, 0.0]
+        entry: Dict[str, Any] = {
+            "track_id": int(track_id) if track_id is not None else -1,
+            "class_name": str(obj.get("class_name", "")),
+            "confidence": round(float(obj.get("confidence", 0.0)), 3),
+            "x_m": round(float(wp[0]), 3),
+            "z_m": round(float(wp[1]), 3),
+            "x_m_smoothed": round(float(wp[0]), 3),
+            "z_m_smoothed": round(float(wp[1]), 3),
+            "vx_m": 0.0,
+            "vz_m": 0.0,
+            "x_var": round(float(cov[0]), 6),
+            "z_var": round(float(cov[2]), 6),
+        }
+        w_m, l_m = _bbox_dims_m(obj.get("bbox_xyxy"))
+        if w_m is not None:
+            entry["width_m"] = w_m
+        if l_m is not None:
+            entry["length_m"] = l_m
+        if obj.get("color"):
+            entry["color"] = str(obj["color"])
+        objects_out.append(entry)
 
     trajectories_out: List[Dict[str, Any]] = []
     if trajectories:
@@ -652,22 +1285,43 @@ def export_scene_json(
     tracks_out: List[Dict[str, Any]] = []
     if tracks_registry:
         for tid, cname in tracks_registry.items():
-            tracks_out.append({"track_id": int(tid), "class_name": str(cname)})
+            entry_t: Dict[str, Any] = {"track_id": int(tid), "class_name": str(cname)}
+            if track_colors and tid in track_colors:
+                entry_t["color"] = str(track_colors[tid])
+            tracks_out.append(entry_t)
 
     frames_out: List[Dict[str, Any]] = []
     if frames_history:
         for entry in frames_history:
             frame_objs: List[Dict[str, Any]] = []
             for o in entry.get("objects", []):
-                frame_objs.append(
-                    {
-                        "track_id": int(o.get("track_id", -1)),
-                        "class_name": str(o.get("class_name", "")),
-                        "confidence": round(float(o.get("confidence", 0.0)), 3),
-                        "x_m": round(float(o.get("x_m", 0.0)), 3),
-                        "z_m": round(float(o.get("z_m", 0.0)), 3),
-                    }
-                )
+                raw_x = float(o.get("x_m", 0.0))
+                raw_z = float(o.get("z_m", 0.0))
+                sm_x = float(o.get("x_m_smoothed", raw_x))
+                sm_z = float(o.get("z_m_smoothed", raw_z))
+                fobj: Dict[str, Any] = {
+                    "track_id": int(o.get("track_id", -1)),
+                    "class_name": str(o.get("class_name", "")),
+                    "confidence": round(float(o.get("confidence", 0.0)), 3),
+                    "x_m": round(raw_x, 3),
+                    "z_m": round(raw_z, 3),
+                    "x_m_smoothed": round(sm_x, 3),
+                    "z_m_smoothed": round(sm_z, 3),
+                    "vx_m": round(float(o.get("vx_m", 0.0)), 4),
+                    "vz_m": round(float(o.get("vz_m", 0.0)), 4),
+                    "x_var": round(float(o.get("x_var", 0.0)), 6),
+                    "z_var": round(float(o.get("z_var", 0.0)), 6),
+                }
+                fw_m, fl_m = _bbox_dims_m(o.get("bbox_xyxy"))
+                if fw_m is not None:
+                    fobj["width_m"] = fw_m
+                if fl_m is not None:
+                    fobj["length_m"] = fl_m
+                # 트랙 다수결 색을 우선 적용해 프레임 간 깜빡임을 막는다.
+                color = (track_colors or {}).get(int(o.get("track_id", -1))) or o.get("color")
+                if color:
+                    fobj["color"] = str(color)
+                frame_objs.append(fobj)
             frames_out.append(
                 {
                     "frame_index": int(entry.get("frame_index", 0)),
@@ -699,7 +1353,7 @@ def write_scene_json(
     primary_path: Path,
     cfg: Optional[PipelineConfig] = None,
 ) -> List[Path]:
-    """Write the scene JSON to ``primary_path`` and mirror to Unity StreamingAssets."""
+    """Write the scene JSON to ``primary_path`` and mirror to web/data for the viewer."""
     written: List[Path] = []
     primary_path.parent.mkdir(parents=True, exist_ok=True)
     with primary_path.open("w", encoding="utf-8") as f:
@@ -707,21 +1361,21 @@ def write_scene_json(
     written.append(primary_path)
 
     cfg = cfg or PipelineConfig()
-    if cfg.unity_streaming_assets_dir:
+    if cfg.web_data_dir:
         # Resolve relative path against this file's repo root so it works
         # regardless of the caller's CWD.
         repo_root = Path(__file__).resolve().parent
-        unity_dir = Path(cfg.unity_streaming_assets_dir)
-        if not unity_dir.is_absolute():
-            unity_dir = repo_root / unity_dir
+        web_dir = Path(cfg.web_data_dir)
+        if not web_dir.is_absolute():
+            web_dir = repo_root / web_dir
         try:
-            unity_dir.mkdir(parents=True, exist_ok=True)
-            unity_path = unity_dir / cfg.unity_scene_filename
-            with unity_path.open("w", encoding="utf-8") as f:
+            web_dir.mkdir(parents=True, exist_ok=True)
+            web_path = web_dir / cfg.web_scene_filename
+            with web_path.open("w", encoding="utf-8") as f:
                 json.dump(scene, f, ensure_ascii=False)
-            written.append(unity_path)
+            written.append(web_path)
         except OSError:
-            # Unity 프로젝트가 없을 수도 있으므로 mirror 실패는 치명적이지 않음
+            # web/ 디렉토리가 없을 수도 있으므로 mirror 실패는 치명적이지 않음
             pass
     return written
 
@@ -730,34 +1384,114 @@ class RoadSceneProjector:
     def __init__(self, config: Optional[PipelineConfig] = None):
         self.config = config or PipelineConfig()
         self.device = _resolve_device(self.config.device)
-        self.road_model = YOLO(self.config.road_model_path)
-        self.crosswalk_model = YOLO(self.config.crosswalk_model_path)
-        self.object_model = YOLO(self.config.object_model_path)
+
+        # 도로 백엔드 선택: YOLO-seg(기본) 또는 SMP U-Net.
+        # U-Net 의존성(segmentation_models_pytorch)은 "unet" 일 때만 지연 로드한다.
+        self._use_road_unet = self.config.road_detector_type == "unet"
+        if self._use_road_unet:
+            if self.config.use_onnx:
+                from smp_road.model import OnnxUNetPredictor  # lazy import
+                self.road_model = OnnxUNetPredictor(
+                    _onnx_path(self.config.road_unet_model_path, self.config.road_unet_onnx_model_path),
+                    imgsz=self.config.road_unet_imgsz,
+                )
+                self._road_torch_device = "cpu"
+            else:
+                from smp_road.model import load_checkpoint  # lazy import
+                self._road_torch_device = _perspective_torch_device(self.device)
+                self.road_model, _ = load_checkpoint(
+                    self.config.road_unet_model_path, device=self._road_torch_device
+                )
+        else:
+            self._road_torch_device = None
+            self.road_model = YOLO(self.config.road_model_path)
+
+        cw_path = (
+            _onnx_path(self.config.crosswalk_model_path, self.config.crosswalk_onnx_model_path)
+            if self.config.use_onnx
+            else self.config.crosswalk_model_path
+        )
+        self.crosswalk_model = YOLO(cw_path)
         self.perspective_model = _load_perspective_model(self.config.perspective_version, self.device)
+
+        self._use_rfdetr = self.config.object_detector_type == "rfdetr"
+        if self._use_rfdetr:
+            self.object_model, self._rfdetr_class_names = _load_rfdetr_model(self.config.rfdetr_object_model_path)
+            try:
+                import supervision as sv  # type: ignore
+                self._sv_tracker = sv.ByteTrack(
+                    lost_track_buffer=30,
+                )
+            except ImportError:
+                raise ImportError("supervision 패키지가 없습니다. `pip install supervision` 을 실행하세요.")
+        else:
+            obj_path = (
+                _onnx_path(self.config.object_model_path, self.config.object_onnx_model_path)
+                if self.config.use_onnx
+                else self.config.object_model_path
+            )
+            self.object_model = YOLO(obj_path)
+            self._rfdetr_class_names = list(OBJECT_CLASS_NAMES)
+            self._sv_tracker = None
+
+    def _infer_road(self, image_bgr: np.ndarray) -> Dict[str, Any]:
+        """도로 백엔드 추상화: YOLO-seg / U-Net 어느 쪽이든 {'road_polygons_uv': [...]} 반환."""
+        if self._use_road_unet:
+            if self.config.use_onnx:
+                return self.road_model.infer(
+                    image_bgr,
+                    threshold=self.config.road_unet_threshold,
+                    min_area=self.config.road_unet_min_area,
+                )
+            from smp_road.model import infer_road_polygons  # lazy import
+            return infer_road_polygons(
+                self.road_model,
+                image_bgr,
+                imgsz=self.config.road_unet_imgsz,
+                threshold=self.config.road_unet_threshold,
+                min_area=self.config.road_unet_min_area,
+                device=self._road_torch_device,
+            )
+        return infer_road_model(
+            image_bgr=image_bgr,
+            model=self.road_model,
+            conf=self.config.road_conf,
+            device=self.device,
+        )
 
     def run(self, image_path: str, save_dir: Optional[str] = None) -> Dict[str, Any]:
         image_bgr = cv2.imread(image_path)
         if image_bgr is None:
             raise FileNotFoundError(f"Failed to read image: {image_path}")
 
-        road_out = infer_road_model(
-            image_bgr=image_bgr,
-            model=self.road_model,
-            conf=self.config.road_conf,
-            device=self.device,
-        )
+        # 색 분류는 CLAHE(명도 평활화) 이전의 원본 색을 써야 정확하다.
+        color_src = image_bgr
+        if self.config.use_clahe:
+            image_bgr = _apply_clahe(image_bgr)
+
+        road_out = self._infer_road(image_bgr)
         crosswalk_out = infer_crosswalk_model(
             image_bgr=image_bgr,
             model=self.crosswalk_model,
             conf=self.config.crosswalk_conf,
             device=self.device,
         )
-        obj_out = infer_object_model(
-            image_bgr=image_bgr,
-            model=self.object_model,
-            conf=self.config.object_conf,
-            device=self.device,
-        )
+        if self._use_rfdetr:
+            obj_out = infer_object_model_rfdetr(
+                image_bgr=image_bgr,
+                model=self.object_model,
+                conf=self.config.object_conf,
+                class_names=self._rfdetr_class_names,
+                color_image_bgr=color_src,
+            )
+        else:
+            obj_out = infer_object_model(
+                image_bgr=image_bgr,
+                model=self.object_model,
+                conf=self.config.object_conf,
+                device=self.device,
+                color_image_bgr=color_src,
+            )
 
         camera = estimate_camera_params(image_bgr, self.perspective_model)
         bev_image, projected_objects = render_bev_scene(
@@ -822,15 +1556,28 @@ class RoadSceneProjector:
         crosswalk_polygons_uv: List[np.ndarray],
         camera: Dict[str, float],
         tracker: BEVObjectTracker,
+        color_image_bgr: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]], List[Dict[str, Any]], Dict[int, List[Tuple[int, int]]]]:
-        obj_out = infer_object_model(
-            image_bgr=frame_bgr,
-            model=self.object_model,
-            conf=self.config.object_conf,
-            device=self.device,
-            use_tracker=True,
-        )
+        if self._use_rfdetr:
+            obj_out = infer_object_model_rfdetr(
+                image_bgr=frame_bgr,
+                model=self.object_model,
+                conf=self.config.object_conf,
+                class_names=self._rfdetr_class_names,
+                sv_tracker=self._sv_tracker,
+                color_image_bgr=color_image_bgr,
+            )
+        else:
+            obj_out = infer_object_model(
+                image_bgr=frame_bgr,
+                model=self.object_model,
+                conf=self.config.object_conf,
+                device=self.device,
+                use_tracker=True,
+                color_image_bgr=color_image_bgr,
+            )
         projected = _project_objects_to_bev(obj_out["detections"], camera, self.config)
+        projected = _suppress_duplicate_detections_world(projected, self.config.track_world_nms_distance_m)
         tracked_objects, trajectories = tracker.update(projected)
         track_id_map = {
             int(item["detection_id"]): int(item["track_id"])
@@ -872,13 +1619,13 @@ class RoadSceneProjector:
             cap.release()
             raise RuntimeError(f"Video has no readable frame: {video_path}")
 
+        # 색 분류용 원본(첫 프레임)을 CLAHE 적용 전에 보관한다.
+        first_frame_color = first_frame
+        if self.config.use_clahe:
+            first_frame = _apply_clahe(first_frame)
+
         # Road model is intentionally run once for static-camera video.
-        road_out = infer_road_model(
-            image_bgr=first_frame,
-            model=self.road_model,
-            conf=self.config.road_conf,
-            device=self.device,
-        )
+        road_out = self._infer_road(first_frame)
         road_polygons_uv = road_out["road_polygons_uv"]
         crosswalk_out = infer_crosswalk_model(
             image_bgr=first_frame,
@@ -921,10 +1668,14 @@ class RoadSceneProjector:
         while True:
             if frame_idx == 0:
                 frame = first_frame
+                frame_color = first_frame_color
             else:
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     break
+                frame_color = frame
+                if self.config.use_clahe:
+                    frame = _apply_clahe(frame)
 
             if self.config.video_recompute_camera_each_frame and frame_idx > 0:
                 camera = estimate_camera_params(frame, self.perspective_model)
@@ -935,6 +1686,7 @@ class RoadSceneProjector:
                 crosswalk_polygons_uv=crosswalk_polygons_uv,
                 camera=camera,
                 tracker=tracker,
+                color_image_bgr=frame_color,
             )
 
             bev_resized = cv2.resize(bev, (frame_w, frame_h), interpolation=cv2.INTER_LINEAR)
@@ -964,15 +1716,24 @@ class RoadSceneProjector:
                     continue
                 cls = str(o.get("class_name", ""))
                 tracks_registry.setdefault(int(tid), cls)
-                frame_objs.append(
-                    {
-                        "track_id": int(tid),
-                        "class_name": cls,
-                        "confidence": float(o.get("confidence", 0.0)),
-                        "x_m": float(wp[0]),
-                        "z_m": float(wp[1]),
-                    }
-                )
+                cov = o.get("world_cov") or [0.0, 0.0, 0.0]
+                fobj: Dict[str, Any] = {
+                    "track_id": int(tid),
+                    "class_name": cls,
+                    "confidence": float(o.get("confidence", 0.0)),
+                    "x_m": float(wp[0]),
+                    "z_m": float(wp[1]),
+                    "cov_xx": float(cov[0]),
+                    "cov_xz": float(cov[1]),
+                    "cov_zz": float(cov[2]),
+                }
+                bbox = o.get("bbox_xyxy")
+                if bbox is not None:
+                    fobj["bbox_xyxy"] = [float(v) for v in bbox]
+                color = o.get("color")
+                if color:
+                    fobj["color"] = color
+                frame_objs.append(fobj)
             frames_history.append({"frame_index": frame_idx, "objects": frame_objs})
 
             frame_idx += 1
@@ -984,6 +1745,56 @@ class RoadSceneProjector:
         cap.release()
         writer.release()
 
+        # Offline forward-backward (RTS) smoothing per track.
+        track_observations: Dict[int, List[Dict[str, Any]]] = {}
+        for entry in frames_history:
+            fi = int(entry.get("frame_index", 0))
+            for o in entry.get("objects", []):
+                tid = int(o.get("track_id", -1))
+                if tid < 0:
+                    continue
+                track_observations.setdefault(tid, []).append({
+                    "frame_index": fi,
+                    "x_m": float(o["x_m"]),
+                    "z_m": float(o["z_m"]),
+                    "cov_xx": float(o.get("cov_xx", 0.0)),
+                    "cov_xz": float(o.get("cov_xz", 0.0)),
+                    "cov_zz": float(o.get("cov_zz", 0.0)),
+                })
+        smoothed_tracks = smooth_tracks_rts(track_observations, fps=fps)
+        for entry in frames_history:
+            fi = int(entry.get("frame_index", 0))
+            for o in entry.get("objects", []):
+                tid = int(o.get("track_id", -1))
+                sm = smoothed_tracks.get(tid, {}).get(fi)
+                if sm is None:
+                    o["x_m_smoothed"] = float(o["x_m"])
+                    o["z_m_smoothed"] = float(o["z_m"])
+                    o["vx_m"] = 0.0
+                    o["vz_m"] = 0.0
+                    o["x_var"] = float(o.get("cov_xx", 0.0))
+                    o["z_var"] = float(o.get("cov_zz", 0.0))
+                else:
+                    o["x_m_smoothed"] = sm["x"]
+                    o["z_m_smoothed"] = sm["z"]
+                    o["vx_m"] = sm["vx"]
+                    o["vz_m"] = sm["vz"]
+                    o["x_var"] = sm["x_var"]
+                    o["z_var"] = sm["z_var"]
+
+        # 트랙별 색을 다수결로 확정한다 (프레임마다 흔들리지 않도록).
+        color_votes: Dict[int, Counter] = {}
+        for entry in frames_history:
+            for o in entry.get("objects", []):
+                color = o.get("color")
+                if not color:
+                    continue
+                tid = int(o.get("track_id", -1))
+                if tid < 0:
+                    continue
+                color_votes.setdefault(tid, Counter())[color] += 1
+        track_colors = {tid: votes.most_common(1)[0][0] for tid, votes in color_votes.items()}
+
         scene_data = export_scene_json(
             camera=camera,
             road_polygons_uv=road_polygons_uv,
@@ -994,6 +1805,7 @@ class RoadSceneProjector:
             frame_index=max(0, frame_idx - 1),
             frames_history=frames_history,
             tracks_registry=tracks_registry,
+            track_colors=track_colors,
             fps=fps,
         )
         scene_path = save_root / f"{stem}_scene.json"

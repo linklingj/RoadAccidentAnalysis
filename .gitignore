@@ -52,6 +52,7 @@ pip-wheel-metadata/
 logs/
 
 # ML training / inference artifacts
+datasets-rfdetr/
 runs/
 wandb/
 mlruns/
@@ -61,6 +62,9 @@ predictions/
 
 # Optional local input/output dirs
 test_images/
+
+# Server upload scratch dir (server.py saves incoming media here)
+uploads/
 
 # Model artifacts (keep project base model)
 *.ckpt
@@ -81,5 +85,8 @@ cctv-object-dataset/
 cctv-road-dataset/
 cctv-roadseg-dataset/
 cctv-crosswalk-dataset/
+cctv-object-dataset-coco/
+cctv-object-dataset-aihub/
 PerspectiveFields/
-Dataset/
+rf-detr-large-2026.pth
+rf-detr-nano.pth

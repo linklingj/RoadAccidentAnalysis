@@ -1,0 +1,14 @@
+FROM nginx:1.27-alpine
+
+# Copy the static viewer + bundled sample scene
+COPY web/ /usr/share/nginx/html/
+
+# Allow large JSON uploads if needed (no inference in this mode)
+RUN printf 'server {\n\
+    listen 80;\n\
+    root /usr/share/nginx/html;\n\
+    index index.html;\n\
+    location / { try_files $uri $uri/ /index.html; }\n\
+}\n' > /etc/nginx/conf.d/default.conf
+
+EXPOSE 80

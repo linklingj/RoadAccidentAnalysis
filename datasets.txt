@@ -1,0 +1,15 @@
+사용 데이터셋 링크
+데이터셋 파일은 용량이 너무 크고 항목이 다양하여 링크를 첨부했습니다
+
+차량 객체 데이터셋
+- https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&aihubDataSe=data&dataSetSn=165
+
+도로 세그멘테이션
+- https://universe.roboflow.com/road001/road-segmentation-cctv
+
+횡단보도 인스턴스 세그멘테이션
+- https://universe.roboflow.com/answer-l-wnpxb/0415
+
+교통사고 영상 추론 테스트셋
+- https://www.kaggle.com/datasets/webadvisor/real-time-anomaly-detection-in-cctv-surveillance
+- https://ankitshah009.github.io/accident_forecasting_traffic_camera
