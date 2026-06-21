@@ -11,14 +11,13 @@ from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
-import torch
-import segmentation_models_pytorch as smp
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
-def build_unet(encoder_name: str = "resnet34", encoder_weights: str | None = "imagenet") -> smp.Unet:
+def build_unet(encoder_name: str = "resnet34", encoder_weights: str | None = "imagenet"):
+    import segmentation_models_pytorch as smp
     return smp.Unet(
         encoder_name=encoder_name,
         encoder_weights=encoder_weights,
@@ -28,11 +27,13 @@ def build_unet(encoder_name: str = "resnet34", encoder_weights: str | None = "im
     )
 
 
-def save_checkpoint(path: str, model: smp.Unet, meta: Dict[str, Any]) -> None:
+def save_checkpoint(path: str, model: Any, meta: Dict[str, Any]) -> None:
+    import torch
     torch.save({"state_dict": model.state_dict(), "meta": meta}, path)
 
 
-def load_checkpoint(path: str, device: Any = "cpu") -> Tuple[smp.Unet, Dict[str, Any]]:
+def load_checkpoint(path: str, device: Any = "cpu") -> Tuple[Any, Dict[str, Any]]:
+    import torch
     ckpt = torch.load(path, map_location=device, weights_only=False)
     meta = ckpt.get("meta", {})
     model = build_unet(
@@ -44,7 +45,8 @@ def load_checkpoint(path: str, device: Any = "cpu") -> Tuple[smp.Unet, Dict[str,
     return model, meta
 
 
-def _preprocess(image_rgb: np.ndarray, imgsz: int) -> torch.Tensor:
+def _preprocess(image_rgb: np.ndarray, imgsz: int):
+    import torch
     resized = cv2.resize(image_rgb, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR)
     arr = resized.astype(np.float32) / 255.0
     arr = (arr - IMAGENET_MEAN) / IMAGENET_STD
@@ -52,20 +54,21 @@ def _preprocess(image_rgb: np.ndarray, imgsz: int) -> torch.Tensor:
     return tensor
 
 
-@torch.no_grad()
 def predict_mask(
-    model: smp.Unet,
+    model: Any,
     image_bgr: np.ndarray,
     imgsz: int = 512,
     threshold: float = 0.5,
     device: Any = "cpu",
 ) -> np.ndarray:
     """BGR 이미지 -> 원본 해상도 0/1 binary mask(H,W)."""
+    import torch
     h, w = image_bgr.shape[:2]
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    tensor = _preprocess(image_rgb, imgsz).to(device)
-    logits = model(tensor)
-    prob = torch.sigmoid(logits)[0, 0].cpu().numpy()
+    with torch.no_grad():
+        tensor = _preprocess(image_rgb, imgsz).to(device)
+        logits = model(tensor)
+        prob = torch.sigmoid(logits)[0, 0].cpu().numpy()
     prob = cv2.resize(prob, (w, h), interpolation=cv2.INTER_LINEAR)
     return (prob >= threshold).astype(np.uint8)
 
@@ -129,9 +132,8 @@ class OnnxUNetPredictor:
         return {"road_polygons_uv": mask_to_polygons(mask, min_area=min_area), "mask": mask}
 
 
-@torch.no_grad()
 def infer_road_polygons(
-    model: smp.Unet,
+    model: Any,
     image_bgr: np.ndarray,
     imgsz: int = 512,
     threshold: float = 0.5,

@@ -206,6 +206,10 @@ def apply(fname, ops):
         new_tr.append(tr)
     d["trajectories"] = new_tr
 
+    # per-scene default for the viewer's 차량 크기 slider (read by main.js applyScene)
+    if ops.get("vehicle_scale") is not None:
+        d["vehicle_scale"] = ops["vehicle_scale"]
+
     with open(OUT / fname, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False)
     print(f"[fix] {fname}: tracks {len(d['tracks'])}, frames {len(d['frames'])}, "
@@ -225,6 +229,7 @@ SCENES = {
         "pin": [198],   # parked car that spins ±180° from positional noise
         "car_len_target": 4.4,   # render cars at ~4.5 m (was ~5.0 m, oversized)
         "clip_road": [-10, 7, -2, 52],   # road z->99 trimmed to action (vehicles z<=47)
+        "vehicle_scale": 0.17,   # default 차량 크기 slider value for this sample
     },
     "sample_scene2.json": {
         # spurious short car/person flashes; 380 = transient dup of sedan 358 during impact;
@@ -236,11 +241,13 @@ SCENES = {
         "pin": [379],   # GAZelle truck is parked post-collision; pin removes the merge seam hop
         "car_len_target": 4.4,   # render cars at ~4.5 m (was ~5.16 m, oversized)
         "clip_road": [-15, 13, -2, 56],   # road z->243 x->40 trimmed to action (vehicles z<=51 x<=10)
+        "vehicle_scale": 0.23,   # default 차량 크기 slider value for this sample
     },
     "sample_scene3.json": {
         "delete": [407, 425, 439],   # spurious/duplicate short black/white flashes
         "car_len_target": 4.4,   # render cars at ~4.5 m (was ~5.49 m, oversized)
         "clip_road": [-18, 6, -2, 52],   # road z->181 x->-73 trimmed to action (vehicles z<=47 x<=-15)
+        "vehicle_scale": 0.28,   # default 차량 크기 slider value for this sample
     },
 }
 

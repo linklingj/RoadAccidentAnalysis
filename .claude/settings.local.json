@@ -95,7 +95,17 @@
       "Bash(\"C:/Users/jaehy/.conda/envs/dl/python.exe\" _postfix/track_dump.py web/data/sample_scene2.json 330 10)",
       "Bash(\"C:/Users/jaehy/.conda/envs/dl/python.exe\" _postfix/track_dump.py web/data/sample_scene1.json 136 12)",
       "Bash(\"C:/Users/jaehy/.conda/envs/dl/python.exe\" _postfix/apply_fix.py sample_scene2.json)",
-      "Bash(\"C:/Users/jaehy/.conda/envs/dl/python.exe\" _postfix/analyze.py web/data/sample_scene2.json)"
+      "Bash(\"C:/Users/jaehy/.conda/envs/dl/python.exe\" _postfix/analyze.py web/data/sample_scene2.json)",
+      "Bash(git ls-tree *)",
+      "Bash(git fsck *)",
+      "Bash(rm -f docs/_preview.txt)",
+      "Bash(ls -la docs/report*.docx)",
+      "Bash(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration,nb_frames,avg_frame_rate -of default=noprint_wrappers=1 \"C:/Users/jaehy/Videos/화면 녹화/preview.mp4\")",
+      "Read(//c/Users/jaehy/anaconda3/envs/dl/Library/bin/**)",
+      "Read(//c/Users/jaehy/**)",
+      "Bash(/c/Users/jaehy/anaconda3/envs/dl/python.exe -c \"import imageio_ffmpeg as f; print\\(f.get_ffmpeg_exe\\(\\)\\)\")",
+      "Bash(git check-ignore *)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

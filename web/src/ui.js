@@ -142,6 +142,18 @@ export class ViewerUI {
     this.h.onVehicleStyle({ color: this.devColor.value, scale, lengthScale });
   }
 
+  // Set the 차량 크기 slider to `value` and apply it (vehicle scale only — leaves
+  // the dev panel's colour/length untouched). Used so each scene can carry its
+  // own default via the JSON `vehicle_scale` field. Falls back to the model
+  // default (0.35) when no value is given, so it never persists between scenes.
+  setVehicleScale(value) {
+    if (!this.vehScale) return;
+    const v = Number.isFinite(value) && value > 0 ? value : 0.35;
+    this.vehScale.value = String(v);
+    if (this.vehScaleVal) this.vehScaleVal.textContent = `${v.toFixed(2)}×`;
+    this.h.onVehicleStyle({ scale: v });
+  }
+
   setStatus(msg, isError = false, busy = false) {
     this.statusEl.innerHTML = msg
       ? (busy ? `<span class="spinner"></span> ${escapeHtml(msg)}` : escapeHtml(msg))

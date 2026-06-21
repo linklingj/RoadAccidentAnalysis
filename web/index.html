@@ -101,30 +101,6 @@
                     </div>
                 </div>
 
-                <div class="landing-params">
-                    <label class="num"
-                        >카메라 높이
-                        <input
-                            id="landingCamH"
-                            type="number"
-                            value="2.5"
-                            step="0.1"
-                            min="0.5"
-                        />
-                        m
-                    </label>
-                    <label class="num"
-                        >ppm
-                        <input
-                            id="landingPpm"
-                            type="number"
-                            value="28"
-                            step="1"
-                            min="1"
-                        />
-                    </label>
-                </div>
-
                 <div class="landing-footer">
                     <p class="project-desc">
                         CCTV 영상에서 YOLOv8 기반 차량·보행자 검출,
@@ -199,21 +175,6 @@
                         hidden
                         disabled
                     />
-                </label>
-                <label class="num" title="가정 카메라 높이 (m)"
-                    >높이
-                    <input
-                        id="camH"
-                        type="number"
-                        value="2.5"
-                        step="0.1"
-                        min="0.5"
-                    />
-                    m
-                </label>
-                <label class="num" title="BEV 픽셀/미터"
-                    >ppm
-                    <input id="ppm" type="number" value="28" step="1" min="1" />
                 </label>
             </div>
         </header>
@@ -319,6 +280,30 @@
                 <b id="devLengthVal">1.40×</b>
             </label>
             <button id="devReset">기본값으로</button>
+            <hr class="dev-sep" />
+            <label class="dev-row"
+                >카메라 높이
+                <input
+                    id="camH"
+                    type="number"
+                    value="2.5"
+                    step="0.1"
+                    min="0.5"
+                    style="width:60px"
+                />
+                m
+            </label>
+            <label class="dev-row"
+                >ppm
+                <input
+                    id="ppm"
+                    type="number"
+                    value="28"
+                    step="1"
+                    min="1"
+                    style="width:60px"
+                />
+            </label>
         </div>
 
         <div id="status"></div>

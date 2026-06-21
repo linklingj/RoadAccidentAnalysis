@@ -47,8 +47,7 @@ body.on-landing #landing { display: block; }
   font-size: clamp(32px, 6vw, 60px);
   font-weight: 750;
   line-height: 1.1;
-  background: linear-gradient(135deg, #e6ebf2 0%, #93c5fd 50%, #3b82f6 100%);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  color: #e6ebf2;
 }
 
 .landing-subtitle {
@@ -122,36 +121,22 @@ body.on-landing #landing { display: block; }
 /* Thumbnail */
 .sample-thumb {
   width: 100%; aspect-ratio: 16/9; position: relative; overflow: hidden;
+  background-color: #0b0f17;
+  /* cover keeps every thumbnail the same on-card size despite differing source
+     dimensions (660x379 / 577x309 / 602x340) */
+  background-size: cover; background-position: center; background-repeat: no-repeat;
 }
-.thumb-1 {
-  background: linear-gradient(175deg, #050b18 0%, #0d1e38 55%, #162844 100%);
-}
-.thumb-2 {
-  background: linear-gradient(175deg, #050e0a 0%, #0d2416 55%, #183420 100%);
-}
-.thumb-3 {
-  background: linear-gradient(175deg, #0a0614 0%, #1a1030 55%, #25183e 100%);
-}
+.thumb-1 { background-image: url('assets/sample1.png'); }
+.thumb-2 { background-image: url('assets/sample2.png'); }
+.thumb-3 { background-image: url('assets/sample3.png'); }
 
-/* Road surface (perspective trapezoid) */
+/* Subtle dark gradient over the thumbnail so REC / timestamp stay legible */
 .sample-thumb::before {
-  content: ''; position: absolute;
-  bottom: 0; left: 0; right: 0; top: 35%;
-  clip-path: polygon(28% 0%, 72% 0%, 100% 100%, 0% 100%);
-}
-.thumb-1::before { background: rgba(25, 38, 58, 0.9); }
-.thumb-2::before { background: rgba(20, 45, 28, 0.9); }
-.thumb-3::before { background: rgba(38, 25, 58, 0.9); }
-
-/* Center dashed lane marking */
-.sample-thumb::after {
-  content: ''; position: absolute;
-  left: 50%; transform: translateX(-50%);
-  bottom: 0; top: 50%; width: 3px;
-  background: repeating-linear-gradient(
-    to top,
-    rgba(255, 220, 50, 0.75) 0px 10px,
-    transparent 10px 18px
+  content: ''; position: absolute; inset: 0; z-index: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0) 28%,
+    rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 0.5) 100%
   );
 }
 

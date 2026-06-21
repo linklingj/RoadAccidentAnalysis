@@ -15,19 +15,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Python deps (heavy, cached as its own layer) ─────────────────────────────
 # Install CPU-only torch first so pip doesn't pull the ~2 GB CUDA wheel.
 RUN pip install --no-cache-dir \
-        torch==2.3.1 torchvision==0.18.1 \
+        torch==2.4.1 torchvision==0.19.1 \
         --index-url https://download.pytorch.org/whl/cpu
 
 # PerspectiveFields + ML stack
 COPY PerspectiveFields/ ./PerspectiveFields/
 RUN pip install --no-cache-dir -e ./PerspectiveFields/
 
-# Ultralytics (YOLO) + Flask
+# Ultralytics (YOLO) + Flask + ONNX Runtime + RF-DETR + supervision
 RUN pip install --no-cache-dir \
         ultralytics \
         flask>=3.0 \
         gunicorn \
-        imageio
+        imageio \
+        onnxruntime \
+        supervision
+
+# rfdetr: install its non-torch deps first, then rfdetr itself with --no-deps
+# so pip cannot overwrite the CPU-only torch wheel we already have.
+RUN pip install --no-cache-dir \
+        transformers \
+        pydantic \
+        pyDeprecate \
+        tqdm \
+        requests
+RUN pip install --no-cache-dir --no-deps rfdetr
+
+# Verify rfdetr is importable at build time so failures surface here, not at runtime.
+RUN python -c "from rfdetr import RFDETRLarge; print('rfdetr OK')"
 
 # ── Pre-cache PerspectiveFields weights ──────────────────────────────────────
 # Run a tiny import so torch.hub downloads the backbone weights at build time
@@ -47,13 +62,18 @@ EOF
 # ── Application code ──────────────────────────────────────────────────────────
 COPY infer.py train.py server.py ./
 COPY web/ ./web/
+COPY smp_road/ ./smp_road/
 
 # ── Trained model weights (gitignored, copied separately) ────────────────────
 # These are small enough (~168 MB total) to bake into the image.
 # If you prefer S3: remove these COPY lines and add S3 download logic to server.py.
-COPY runs/segment/0405-road/weights/best.pt      ./runs/segment/0405-road/weights/best.pt
-COPY runs/segment/0407-crosswalk/weights/best.pt ./runs/segment/0407-crosswalk/weights/best.pt
-COPY runs/segment/0401-object/weights/best.pt    ./runs/segment/0401-object/weights/best.pt
+COPY runs/segment/0405-road/weights/best.pt           ./runs/segment/0405-road/weights/best.pt
+COPY runs/segment/0407-crosswalk/weights/best.pt      ./runs/segment/0407-crosswalk/weights/best.pt
+COPY runs/segment/0407-crosswalk/weights/best.onnx    ./runs/segment/0407-crosswalk/weights/best.onnx
+COPY runs/segment/0401-object/weights/best.pt         ./runs/segment/0401-object/weights/best.pt
+COPY runs/smp-road/best.onnx                          ./runs/smp-road/best.onnx
+COPY runs/smp-road/best.onnx.data                     ./runs/smp-road/best.onnx.data
+COPY runs/detect/rfdetr-object-0519/best_checkpoint.pth ./runs/detect/rfdetr-object-0519/best_checkpoint.pth
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
 ENV TORCH_HOME=/app/.cache/torch \

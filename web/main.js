@@ -137,6 +137,9 @@ function applyScene(data, media = null) {
   summary.vehicleScale = scaleInfo;
   ui.setInfo(summary);
   ui.setDevMode(summary.mode, summary.frames, summary.fps);
+  // Per-scene default for the 차량 크기 slider (scene JSON `vehicle_scale`); falls
+  // back to the model default so a previous scene's value never carries over.
+  ui.setVehicleScale(data.vehicle_scale != null ? Number(data.vehicle_scale) : 0.35);
   ui.setStatus('');
   syncSpeed();
 }
@@ -570,8 +573,8 @@ landingMediaInput.addEventListener('change', (e) => {
   }
   showSimulator();
   inferMedia(file, {
-    cameraHeight: Number(document.getElementById('landingCamH').value) || undefined,
-    ppm: Number(document.getElementById('landingPpm').value) || undefined,
+    cameraHeight: Number(document.getElementById('camH').value) || undefined,
+    ppm: Number(document.getElementById('ppm').value) || undefined,
   });
 });
 

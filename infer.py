@@ -415,8 +415,10 @@ def _get_rfdetr_class_names(model: Any) -> List[str]:
 def _load_rfdetr_model(model_path: str) -> Tuple[Any, List[str]]:
     try:
         from rfdetr import RFDETRLarge  # type: ignore
-    except ImportError:
-        raise ImportError("rfdetr 패키지가 없습니다. `pip install rfdetr supervision` 을 실행하세요.")
+    except ImportError as _e:
+        raise ImportError(
+            f"rfdetr import 실패: {_e}  (pip install rfdetr supervision 으로 설치하세요)"
+        ) from _e
     model = RFDETRLarge(pretrain_weights=model_path)
     class_names = _get_rfdetr_class_names(model)
     return model, class_names
