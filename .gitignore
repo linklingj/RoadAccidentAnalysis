@@ -81,6 +81,8 @@ uploads/
 .aws-sam/
 .serverless/
 
+DEPLOY.md
+
 # If dataset should be local-only, uncomment below
 cctv-object-dataset/
 cctv-road-dataset/
