@@ -136,6 +136,7 @@ function applyScene(data, media = null) {
   const summary = describeScene(data);
   summary.vehicleScale = scaleInfo;
   ui.setInfo(summary);
+  ui.setDevMode(summary.mode, summary.frames, summary.fps);
   ui.setStatus('');
   syncSpeed();
 }
@@ -334,6 +335,28 @@ function topLevelVehicle(obj) {
   return o;
 }
 
+function getVehicleFrameData(trackId) {
+  if (!currentScene || trackId == null) return null;
+  if (hasTimeline(currentScene)) {
+    const fps = currentScene.fps || 30;
+    const fi = Math.round(playback.currentTime * fps);
+    const clamped = Math.max(0, Math.min(fi, currentScene.frames.length - 1));
+    const frame = currentScene.frames[clamped];
+    if (!frame) return null;
+    return (frame.objects || []).find((o) => o.track_id === trackId) || null;
+  }
+  return (currentScene.objects || []).find((o) => o.track_id === trackId) || null;
+}
+
+function getVehicleData(mesh) {
+  const trackId = mesh && mesh.userData && mesh.userData.trackId != null
+    ? mesh.userData.trackId : null;
+  if (currentScene && hasTimeline(currentScene)) {
+    return getVehicleFrameData(trackId);
+  }
+  return (mesh && mesh.userData && mesh.userData.rawObj) || getVehicleFrameData(trackId);
+}
+
 function enterPOV(mesh) {
   followTarget = mesh;
   controls.enabled = false;
@@ -341,6 +364,7 @@ function enterPOV(mesh) {
   camera.updateProjectionMatrix();
   const label = mesh.name ? mesh.name.replace(/_/g, ' ') : '차량';
   ui.setStatus(`🚗 ${label} 시점 — 빈 공간 클릭 또는 시점 버튼으로 해제`);
+  ui.showVehicleInfo(getVehicleData(mesh));
 }
 
 function exitPOV() {
@@ -353,6 +377,7 @@ function exitPOV() {
   }
   controls.target.copy(sceneBounds.getCenter(new THREE.Vector3()));
   controls.update();
+  ui.hideVehicleInfo();
   ui.setStatus('');
 }
 
@@ -474,8 +499,16 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
   playback.update(dt);
-  if (followTarget) updatePOVCamera(); // ride along the picked vehicle
-  else controls.update();
+  if (followTarget) {
+    updatePOVCamera();
+    ui.updateVehicleInfo(getVehicleData(followTarget));
+  } else {
+    controls.update();
+  }
+  if (currentScene && hasTimeline(currentScene)) {
+    const fps = currentScene.fps || 30;
+    ui.setDevFrame(Math.round(playback.currentTime * fps), currentScene.frames.length);
+  }
   ui.syncPlayback({
     hasTimeline: playback.hasTimeline,
     isPlaying: playback.isPlaying,

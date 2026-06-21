@@ -101,6 +101,7 @@ export class PlaybackController {
       const mesh = createVehicle(track.className, track.trackId, track.color);
       mesh.name = `Vehicle_T${track.trackId}_${track.className}`;
       mesh.visible = false;
+      mesh.userData.trackId = track.trackId;
       track.instance = mesh;
       this.parent.add(mesh);
     }

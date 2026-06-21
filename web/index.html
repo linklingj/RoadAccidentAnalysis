@@ -62,7 +62,7 @@
                             <div class="sample-info">
                                 <div class="sample-name">교차로 씬</div>
                                 <div class="sample-desc">
-                                    차량 3대 추적 · BEV 투영 · 3D 재구성
+                                    교차로에서의 차량 충돌 영상
                                 </div>
                             </div>
                         </button>
@@ -76,9 +76,9 @@
                                 >
                             </div>
                             <div class="sample-info">
-                                <div class="sample-name">도로 씬</div>
+                                <div class="sample-name">교차로 씬</div>
                                 <div class="sample-desc">
-                                    차선 검출 · 횡단보도 인식 · 궤적 분석
+                                    과속 차량 부주의 추돌 영상
                                 </div>
                             </div>
                         </button>
@@ -92,9 +92,9 @@
                                 >
                             </div>
                             <div class="sample-info">
-                                <div class="sample-name">타임라인 씬</div>
+                                <div class="sample-name">밤 시간대 보행자 추돌</div>
                                 <div class="sample-desc">
-                                    영상 동기 재생 · 프레임별 위치 추적
+                                    밤 시간대의 보행자와 추돌 영상
                                 </div>
                             </div>
                         </button>
@@ -288,8 +288,20 @@
             </label>
         </div>
 
+        <div id="vehicleInfo" class="hidden">
+            <div class="vi-head">차량 정보</div>
+            <div class="vi-row"><span>Track ID</span><b id="viTrackId">—</b></div>
+            <div class="vi-row"><span>x_m_smoothed</span><b id="viX">—</b></div>
+            <div class="vi-row"><span>z_m_smoothed</span><b id="viZ">—</b></div>
+            <div class="vi-row"><span>vx_m</span><b id="viVx">—</b></div>
+            <div class="vi-row"><span>vz_m</span><b id="viVz">—</b></div>
+        </div>
+
         <div id="devPanel" class="hidden">
             <div class="dev-head">개발자 모드 <span>F1 토글</span></div>
+            <div class="dev-info-row"><span>Mode</span><b id="devMode">—</b></div>
+            <div class="dev-info-row"><span>Frame</span><b id="devFrame">—</b></div>
+            <hr class="dev-sep" />
             <label class="dev-row"
                 >색상
                 <input id="devColor" type="color" value="#ffffff" />

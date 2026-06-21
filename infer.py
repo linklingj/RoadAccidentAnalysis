@@ -18,8 +18,19 @@ DEFAULT_ROAD_MODEL_PATH = "runs/segment/0401-road/weights/best.pt"
 DEFAULT_ROAD_UNET_MODEL_PATH = "runs/smp-road/best.pt"
 DEFAULT_CROSSWALK_MODEL_PATH = "runs/segment/0406-crosswalk/weights/best.pt"
 DEFAULT_OBJECT_MODEL_PATH = "runs/segment/0619-object/weights/best.pt"
+
+
 DEFAULT_RFDETR_OBJECT_MODEL_PATH = "runs/detect/rfdetr-object-0519/best_checkpoint.pth"
+
+
 DEFAULT_PERSPECTIVE_VERSION = "Paramnet-360Cities-edina-centered"
+
+
+def _onnx_path(pt_path: str, override: str = "") -> str:
+    """`.pt`/`.pth` 경로에서 `.onnx` 경로를 유도한다. override가 있으면 그대로 반환."""
+    if override:
+        return override
+    return str(Path(pt_path).with_suffix(".onnx"))
 
 # cctv-object-dataset/data.yaml names 순서와 동일하게 유지
 OBJECT_CLASS_NAMES: List[str] = ["bus", "car", "person", "riders", "truck"]
@@ -61,6 +72,11 @@ class PipelineConfig:
     # 웹 뷰어 연동: scene JSON을 web/data로 미러링하여 three.js 뷰어가 바로 로드
     web_data_dir: Optional[str] = "web/data"
     web_scene_filename: str = "scene_data.json"
+    # ONNX Runtime 가속: True면 U-Net/YOLO crosswalk 모델을 .onnx로 로드 (CPU 1.5-2.5x 향상)
+    use_onnx: bool = False
+    crosswalk_onnx_model_path: str = ""  # 비면 crosswalk_model_path에서 .onnx로 자동 유도
+    road_unet_onnx_model_path: str = ""  # 비면 road_unet_model_path에서 .onnx로 자동 유도
+    object_onnx_model_path: str = ""     # 비면 object_model_path에서 .onnx로 자동 유도
 
 
 def _resolve_device(device: Optional[Any]) -> Any:
@@ -1371,16 +1387,29 @@ class RoadSceneProjector:
         # U-Net 의존성(segmentation_models_pytorch)은 "unet" 일 때만 지연 로드한다.
         self._use_road_unet = self.config.road_detector_type == "unet"
         if self._use_road_unet:
-            from smp_road.model import load_checkpoint  # lazy import
-            self._road_torch_device = _perspective_torch_device(self.device)
-            self.road_model, _ = load_checkpoint(
-                self.config.road_unet_model_path, device=self._road_torch_device
-            )
+            if self.config.use_onnx:
+                from smp_road.model import OnnxUNetPredictor  # lazy import
+                self.road_model = OnnxUNetPredictor(
+                    _onnx_path(self.config.road_unet_model_path, self.config.road_unet_onnx_model_path),
+                    imgsz=self.config.road_unet_imgsz,
+                )
+                self._road_torch_device = "cpu"
+            else:
+                from smp_road.model import load_checkpoint  # lazy import
+                self._road_torch_device = _perspective_torch_device(self.device)
+                self.road_model, _ = load_checkpoint(
+                    self.config.road_unet_model_path, device=self._road_torch_device
+                )
         else:
             self._road_torch_device = None
             self.road_model = YOLO(self.config.road_model_path)
 
-        self.crosswalk_model = YOLO(self.config.crosswalk_model_path)
+        cw_path = (
+            _onnx_path(self.config.crosswalk_model_path, self.config.crosswalk_onnx_model_path)
+            if self.config.use_onnx
+            else self.config.crosswalk_model_path
+        )
+        self.crosswalk_model = YOLO(cw_path)
         self.perspective_model = _load_perspective_model(self.config.perspective_version, self.device)
 
         self._use_rfdetr = self.config.object_detector_type == "rfdetr"
@@ -1394,13 +1423,24 @@ class RoadSceneProjector:
             except ImportError:
                 raise ImportError("supervision 패키지가 없습니다. `pip install supervision` 을 실행하세요.")
         else:
-            self.object_model = YOLO(self.config.object_model_path)
+            obj_path = (
+                _onnx_path(self.config.object_model_path, self.config.object_onnx_model_path)
+                if self.config.use_onnx
+                else self.config.object_model_path
+            )
+            self.object_model = YOLO(obj_path)
             self._rfdetr_class_names = list(OBJECT_CLASS_NAMES)
             self._sv_tracker = None
 
     def _infer_road(self, image_bgr: np.ndarray) -> Dict[str, Any]:
         """도로 백엔드 추상화: YOLO-seg / U-Net 어느 쪽이든 {'road_polygons_uv': [...]} 반환."""
         if self._use_road_unet:
+            if self.config.use_onnx:
+                return self.road_model.infer(
+                    image_bgr,
+                    threshold=self.config.road_unet_threshold,
+                    min_area=self.config.road_unet_min_area,
+                )
             from smp_road.model import infer_road_polygons  # lazy import
             return infer_road_polygons(
                 self.road_model,

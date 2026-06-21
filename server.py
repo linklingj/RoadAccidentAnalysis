@@ -43,19 +43,19 @@ SAMPLE_META = [
         "id": "sample1",
         "name": "교차로1 씬",
         "desc": "교차로 추돌 사고",
-        "file": WEB_DIR / "data" / "sample1_scene.json",
+        "file": WEB_DIR / "data" / "sample_scene1.json",
     },
     {
         "id": "sample2",
         "name": "교차로2 씬",
         "desc": "교차로 추돌 사고",
-        "file": WEB_DIR / "data" / "sample2_scene.json",
+        "file": WEB_DIR / "data" / "sample_scene2.json",
     },
     {
         "id": "sample3",
         "name": "도로 씬",
         "desc": "일반 도로 추돌 사고",
-        "file": WEB_DIR / "data" / "sample3_scene.json",
+        "file": WEB_DIR / "data" / "sample_scene3.json",
     },
 ]
 _SAMPLE_BY_ID = {s["id"]: s for s in SAMPLE_META}
@@ -79,6 +79,9 @@ def _build_config():
         road_model_path=ARGS.road_model,
         crosswalk_model_path=ARGS.crosswalk_model,
         object_model_path=ARGS.object_model,
+        road_detector_type="unet",
+        object_detector_type="rfdetr",
+        rfdetr_object_model_path=ARGS.rfdetr_object_model,
         road_conf=ARGS.road_conf,
         object_conf=ARGS.object_conf,
         camera_height_m=ARGS.camera_height,
@@ -87,6 +90,7 @@ def _build_config():
         bev_height=ARGS.bev_height,
         use_clahe=not ARGS.no_clahe,
         device=device,
+        use_onnx=True,
     )
 
 
@@ -264,6 +268,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bev-height", type=int, default=960)
     p.add_argument("--no-clahe", action="store_true")
     p.add_argument("--device", default=None, help="e.g. 'cpu', '0', 'cuda:0'")
+    p.add_argument("--rfdetr-object-model", default="runs/detect/rfdetr-object-0519/best_checkpoint.pth",
+                   help="RF-DETR object 탐지 모델 경로 (.pth)")
     return p
 
 

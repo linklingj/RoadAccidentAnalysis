@@ -13,8 +13,8 @@ const GLB_CONFIGS = {
   car:    { url: 'assets/coupe.glb', targetLen: 4.4, forwardSign: 1 },
   bus:    { url: 'assets/coupe.glb', targetLen: 5.5, forwardSign: 1 },
   truck:  { url: 'assets/armor.glb', targetLen: 4.0, forwardSign: 1 },
-  person: { url: 'assets/human.glb', targetLen: 0.5, forwardSign: 1 },
-  riders: { url: 'assets/bike.glb',  targetLen: 2.0, forwardSign: 1 },
+  person: { url: 'assets/human.glb', targetLen: 1.0, forwardSign: 1 },
+  riders: { url: 'assets/bike.glb',  targetLen: 3.0, forwardSign: -1 },
 };
 const GLB_FALLBACK_CONFIG = GLB_CONFIGS.car;
 

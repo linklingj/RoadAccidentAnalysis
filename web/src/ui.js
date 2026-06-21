@@ -22,10 +22,19 @@ export class ViewerUI {
     this.playbackBar = this.$('playbackBar');
     this.devPanel = this.$('devPanel');
     this.devColor = this.$('devColor');
-    this.vehScale = this.$('vehScale');   // car size slider (always-visible panel)
+    this.vehScale = this.$('vehScale');
     this.devLength = this.$('devLength');
     this.vehScaleVal = this.$('vehScaleVal');
     this.devLengthVal = this.$('devLengthVal');
+    this.devMode = this.$('devMode');
+    this.devFrame = this.$('devFrame');
+
+    this.vehicleInfo = this.$('vehicleInfo');
+    this.viTrackId = this.$('viTrackId');
+    this.viX = this.$('viX');
+    this.viZ = this.$('viZ');
+    this.viVx = this.$('viVx');
+    this.viVz = this.$('viVz');
 
     // Left-pane original media (synced to the 3D timeline).
     this.mediaVideo = this.$('mediaVideo');
@@ -209,7 +218,6 @@ export class ViewerUI {
       ? `${vs.label} (×${vs.multiplier.toFixed(2)}, 단계 ${vs.step}/5)`
       : '—';
     const rows = [
-      ['Mode', summary.mode === 'video' ? `video (${summary.frames} frames @ ${summary.fps.toFixed(2)} fps)` : 'image'],
       ['Roads', summary.roads],
       ['Crosswalks', summary.crosswalks],
       ['Objects', summary.objects],
@@ -222,6 +230,44 @@ export class ViewerUI {
     this.infoEl.innerHTML = rows
       .map(([k, v]) => `<div class="row"><span>${k}</span><b>${v}</b></div>`)
       .join('');
+  }
+
+  setDevMode(mode, frames, fps) {
+    if (!this.devMode) return;
+    this.devMode.textContent = mode === 'video'
+      ? `video (${frames} fr @ ${fps.toFixed(1)} fps)`
+      : 'image';
+  }
+
+  setDevFrame(frameIdx, totalFrames) {
+    if (!this.devFrame) return;
+    this.devFrame.textContent = totalFrames > 0
+      ? `${frameIdx} / ${totalFrames - 1}`
+      : '—';
+  }
+
+  showVehicleInfo(data) {
+    if (!this.vehicleInfo) return;
+    this.vehicleInfo.classList.remove('hidden');
+    this._applyVehicleInfo(data);
+  }
+
+  updateVehicleInfo(data) {
+    if (!this.vehicleInfo || this.vehicleInfo.classList.contains('hidden')) return;
+    this._applyVehicleInfo(data);
+  }
+
+  hideVehicleInfo() {
+    if (this.vehicleInfo) this.vehicleInfo.classList.add('hidden');
+  }
+
+  _applyVehicleInfo(data) {
+    const fmt = (v) => (v != null ? Number(v).toFixed(3) : '—');
+    this.viTrackId.textContent = data && data.track_id != null ? data.track_id : '—';
+    this.viX.textContent = fmt(data && data.x_m_smoothed);
+    this.viZ.textContent = fmt(data && data.z_m_smoothed);
+    this.viVx.textContent = fmt(data && data.vx_m);
+    this.viVz.textContent = fmt(data && data.vz_m);
   }
 
   syncPlayback(p) {

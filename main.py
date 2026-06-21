@@ -22,6 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bev-height", type=int, default=960, help="BEV image height")
     parser.add_argument("--device", type=str, default=None, help="Inference device. e.g., 'cpu', '0', 'cuda:0'")
     parser.add_argument("--no-clahe", action="store_true", help="Disable CLAHE preprocessing")
+    parser.add_argument("--use-onnx", action="store_true",
+                        help="U-Net/YOLO crosswalk 모델을 ONNX Runtime으로 실행 (CPU 가속, 먼저 export_onnx.py 실행 필요)")
     return parser
 
 
@@ -58,6 +60,7 @@ def main() -> None:
         bev_height=args.bev_height,
         use_clahe=not args.no_clahe,
         device=parsed_device,
+        use_onnx=args.use_onnx,
     )
 
     if args.video:

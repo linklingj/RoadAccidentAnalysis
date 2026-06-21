@@ -227,6 +227,7 @@ body.on-landing #topbar,
 body.on-landing #panel,
 body.on-landing #playbackBar,
 body.on-landing #devPanel,
+body.on-landing #vehicleInfo,
 body.on-landing #status,
 body.on-landing #dropHint { display: none !important; }
 
@@ -315,7 +316,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .views { display: flex; gap: 6px; margin-top: 12px; }
 .views button { flex: 1; padding: 6px 4px; font-size: 12px; }
 
-/* Vehicle size control (always-visible, in #panel) */
+/* Vehicle size control (in #panel) */
 .panel-row {
   display: flex; align-items: center; gap: 8px; margin-top: 12px;
   font-size: 12.5px; color: var(--muted);
@@ -374,6 +375,31 @@ body.dragging #dropHint { display: grid; }
 }
 .dev-row b { color: var(--text); font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
 #devReset { font-size: 12px; align-self: flex-start; }
+.dev-info-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; color: var(--muted);
+}
+.dev-info-row b { color: var(--text); font-variant-numeric: tabular-nums; }
+.dev-sep { border: none; border-top: 1px solid var(--border); margin: 2px 0; }
+
+/* Vehicle info overlay (click a vehicle to show) */
+#vehicleInfo {
+  position: fixed; left: 14px; bottom: 76px; width: 220px; z-index: 40;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(10px);
+  display: flex; flex-direction: column; gap: 5px;
+}
+#vehicleInfo.hidden { display: none; }
+.vi-head {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+  color: var(--accent); margin-bottom: 2px;
+}
+.vi-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px;
+}
+.vi-row span { color: var(--muted); }
+.vi-row b { color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* Help button & tooltip */
 .help-wrap {

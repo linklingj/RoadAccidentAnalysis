@@ -92,6 +92,43 @@ def mask_to_polygons(
     return polygons
 
 
+class OnnxUNetPredictor:
+    """onnxruntime으로 U-Net을 실행하는 경량 래퍼. torch/smp 의존성 없음.
+
+    infer_road_polygons와 동일한 반환 형식: {'road_polygons_uv': [...], 'mask': ...}
+    """
+
+    def __init__(self, onnx_path: str, imgsz: int = 512) -> None:
+        import onnxruntime as ort
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 4
+        opts.intra_op_num_threads = 4
+        self._sess = ort.InferenceSession(
+            onnx_path,
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
+        )
+        self._input_name = self._sess.get_inputs()[0].name
+        self._imgsz = imgsz
+
+    def infer(
+        self,
+        image_bgr: np.ndarray,
+        threshold: float = 0.5,
+        min_area: int = 1500,
+    ) -> dict:
+        h, w = image_bgr.shape[:2]
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        resized = cv2.resize(image_rgb, (self._imgsz, self._imgsz), interpolation=cv2.INTER_LINEAR)
+        arr = (resized.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
+        inp = arr.transpose(2, 0, 1)[np.newaxis]  # (1, 3, H, W)
+        logits = self._sess.run(None, {self._input_name: inp})[0]  # (1, 1, H, W)
+        prob = 1.0 / (1.0 + np.exp(-logits[0, 0]))
+        prob = cv2.resize(prob, (w, h), interpolation=cv2.INTER_LINEAR)
+        mask = (prob >= threshold).astype(np.uint8)
+        return {"road_polygons_uv": mask_to_polygons(mask, min_area=min_area), "mask": mask}
+
+
 @torch.no_grad()
 def infer_road_polygons(
     model: smp.Unet,

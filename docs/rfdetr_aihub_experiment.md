@@ -223,11 +223,11 @@ python util/summarize_results.py
 
 **RF 도메인 (Roboflow CCTV)**
 
-![RF 도메인 비교](assets/comparison/grid_rf.jpg)
+![RF 도메인 비교](assets/augmentation_comparison/grid_rf.jpg)
 
 **AI-Hub 도메인 (한국 시내도로 CCTV)**
 
-![AI-Hub 도메인 비교](assets/comparison/grid_aihub.jpg)
+![AI-Hub 도메인 비교](assets/augmentation_comparison/grid_aihub.jpg)
 
 AI-Hub 도메인에서 baseline 은 버스·트럭을 놓치는 경우가 많은 반면, augmented 는
 동일 장면에서 더 많은 객체를 올바른 클래스로 탐지한다.

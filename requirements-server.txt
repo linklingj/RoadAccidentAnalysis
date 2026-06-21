@@ -7,3 +7,4 @@
 #   python server.py
 flask>=3.0
 imageio
+onnxruntime>=1.16
