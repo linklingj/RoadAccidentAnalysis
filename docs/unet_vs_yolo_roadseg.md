@@ -52,7 +52,7 @@ U-Net 의 출력은 binary mask 이지만, `mask_to_polygons()` 로 `findContour
 | test | 135 |
 
 - **GT 정의**: YOLO polygon 라벨을 `cv2.fillPoly` 로 래스터화한 0/1 마스크. 두 모델 모두 **동일한 GT**로 채점하므로 공정하다.
-- U-Net 학습 마스크도 같은 방식으로 생성(`smp_road/dataset.py::rasterize_yolo_polygons`).
+- U-Net 학습 마스크도 같은 방식으로 생성(`util/smp_road/dataset.py::rasterize_yolo_polygons`).
 
 ### 3.2 모델 / 학습
 | 항목 | 값 |
@@ -241,7 +241,7 @@ python eval_road_smp.py \
 ### 산출물
 | 경로 | 내용 |
 |---|---|
-| `smp_road/` | dataset / model 모듈 (재사용·통합용) |
+| `util/smp_road/` | dataset / model 모듈 (재사용·통합용) |
 | `train_road_smp.py` | U-Net 학습 스크립트 |
 | `eval_road_smp.py` | U-Net vs YOLO 비교 평가 스크립트 |
 | `runs/smp-road/best.pt` | 학습된 U-Net 체크포인트 (val IoU 0.9724) |

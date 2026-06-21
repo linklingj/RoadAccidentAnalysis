@@ -31,8 +31,8 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import segmentation_models_pytorch as smp
 
-from smp_road.dataset import RoadSegDataset
-from smp_road.model import build_unet, save_checkpoint
+from util.smp_road.dataset import RoadSegDataset
+from util.smp_road.model import build_unet, save_checkpoint
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)

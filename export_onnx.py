@@ -43,7 +43,7 @@ def export_object(pt_path: str) -> str:
 
 def export_unet(pt_path: str) -> str:
     import torch
-    from smp_road.model import load_checkpoint
+    from util.smp_road.model import load_checkpoint
 
     onnx_path = str(Path(pt_path).with_suffix(".onnx"))
     print(f"[U-Net] {pt_path} → {onnx_path}")

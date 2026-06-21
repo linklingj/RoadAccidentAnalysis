@@ -35,6 +35,7 @@ ENV/
 .coverage
 .coverage.*
 htmlcov/
+_postfix/
 
 # Packaging / build artifacts
 build/

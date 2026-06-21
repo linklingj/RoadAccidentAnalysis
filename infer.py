@@ -1390,14 +1390,14 @@ class RoadSceneProjector:
         self._use_road_unet = self.config.road_detector_type == "unet"
         if self._use_road_unet:
             if self.config.use_onnx:
-                from smp_road.model import OnnxUNetPredictor  # lazy import
+                from util.smp_road.model import OnnxUNetPredictor  # lazy import
                 self.road_model = OnnxUNetPredictor(
                     _onnx_path(self.config.road_unet_model_path, self.config.road_unet_onnx_model_path),
                     imgsz=self.config.road_unet_imgsz,
                 )
                 self._road_torch_device = "cpu"
             else:
-                from smp_road.model import load_checkpoint  # lazy import
+                from util.smp_road.model import load_checkpoint  # lazy import
                 self._road_torch_device = _perspective_torch_device(self.device)
                 self.road_model, _ = load_checkpoint(
                     self.config.road_unet_model_path, device=self._road_torch_device
@@ -1443,7 +1443,7 @@ class RoadSceneProjector:
                     threshold=self.config.road_unet_threshold,
                     min_area=self.config.road_unet_min_area,
                 )
-            from smp_road.model import infer_road_polygons  # lazy import
+            from util.smp_road.model import infer_road_polygons  # lazy import
             return infer_road_polygons(
                 self.road_model,
                 image_bgr,

@@ -413,8 +413,8 @@ RoadAccidentAnalysis/
 ├── train_road_smp.py       # U-Net(SMP) 도로 분할 학습
 ├── eval_road_smp.py        # U-Net vs YOLO 비교 평가
 ├── export_onnx.py          # U-Net/crosswalk → ONNX (CPU 가속)
-├── smp_road/               # U-Net dataset / model 모듈
 ├── util/                   # 라이브 CCTV·AI-Hub 전처리·RF-DETR 평가 스크립트
+│   └── smp_road/           # U-Net dataset / model 모듈
 ├── web/                    # three.js/WebGL 뷰어 (빌드리스)
 │   ├── index.html · main.js · styles.css
 │   ├── src/                # sceneData·roadBuilder·vehicleFactory·objectPlacer·playback·ui

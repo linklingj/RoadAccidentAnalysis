@@ -1,5 +1,6 @@
 사용 데이터셋 링크
 데이터셋 파일은 용량이 너무 크고 항목이 다양하여 링크를 첨부했습니다
+개별 데이터셋에 대한 자세한 설명은 보고서 혹은 readme에서 확인할 수 있습니다
 
 차량 객체 데이터셋
 - https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&aihubDataSe=data&dataSetSn=165

@@ -105,7 +105,8 @@
       "Read(//c/Users/jaehy/**)",
       "Bash(/c/Users/jaehy/anaconda3/envs/dl/python.exe -c \"import imageio_ffmpeg as f; print\\(f.get_ffmpeg_exe\\(\\)\\)\")",
       "Bash(git check-ignore *)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(git mv *)"
     ]
   }
 }
